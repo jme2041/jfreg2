@@ -43,11 +43,13 @@ import shutil
 import argparse
 import subprocess
 
+
 def cmd(*cmd, echo=True, capture_output=False):
     """Run a shell command (echoing it to stdout by default)"""
     if(echo):
         print(' '.join(cmd))
     return subprocess.run(cmd, check=True, capture_output=capture_output)
+
 
 def dset_exists(path):
     """Test whether a dataset exists"""
@@ -80,6 +82,7 @@ def dset_exists(path):
             return True
         return False
 
+
 def strip_ext(path):
     """Strip NIfTI extensions"""
     path = path.removesuffix('.hdr')
@@ -87,6 +90,7 @@ def strip_ext(path):
     path = path.removesuffix('.nii')
     path = path.removesuffix('.nii.gz')
     return path
+
 
 def main(argv):
     """Main jfreg2 routine"""
@@ -147,6 +151,12 @@ def main(argv):
         required=True,
         metavar='TE',
         help='Echo time (in seconds) of EPI used for functional MRI')
+
+    g1.add_argument('--unwarp-dir',
+        required=True,
+        choices=['x', 'y', 'z', 'x-', 'y-', 'z-'],
+        metavar='UNWARP_DIR',
+        help='Unwarp direction (%(choices)s)')
 
     g2 = parser.add_argument_group('options')
 
@@ -411,6 +421,89 @@ def main(argv):
     cmd('imrm', fm_mag_brain_mask_idx)
     cmd('imrm', fm_mag_brain_mask_inv)
 
+    # #####################################
+    # REGISTER FIELD MAP TO STRUCTURAL (T1)
+    # #####################################
+
+    # These steps are based on FSL's epi_reg
+
+    print('Registering fieldmap to T1-weighted dataset....')
+
+    fm_to_t1_brain_init_mat = os.path.join(outdir, strip_ext(os.path.basename(
+        fm_mag_brain_masked)) + '_to_t1_brain_init.mat')
+    fm_to_t1_head_dset = os.path.join(outdir, strip_ext(os.path.basename(
+        fm_mag_head)) + '_to_t1_head')
+    fm_to_t1_head_mat = fm_to_t1_head_dset + '.mat'
+    fm_rads_brain_mask = fm_rads_brain + '_mask'
+    fm_rads_brain_unmasked = fm_rads_brain + '_unmasked'
+    fm_rads_brain_to_t1_head = fm_rads_brain + '_to_t1_head'
+    fm_rads_brain_to_t1_head_pad0 = fm_rads_brain_to_t1_head + '_pad0'
+    fm_rads_brain_to_t1_head_inner_mask = (fm_rads_brain_to_t1_head +
+        '_inner_mask')
+
+    cmd('flirt',
+        '-in', fm_mag_brain_masked,
+        '-ref', t1_brain,
+        '-omat', fm_to_t1_brain_init_mat,
+        '-cost', 'corratio',
+        '-dof', str(6),
+        '-searchrx', str(-opts.search), str(opts.search),
+        '-searchry', str(-opts.search), str(opts.search),
+        '-searchrz', str(-opts.search), str(opts.search))
+
+    cmd('flirt',
+        '-in', fm_mag_head,
+        '-ref', t1_head,
+        '-out', fm_to_t1_head_dset,
+        '-omat', fm_to_t1_head_mat,
+        '-cost', 'corratio',
+        '-dof', str(6),
+        '-init', fm_to_t1_brain_init_mat,
+        '-nosearch',
+        '-interp', 'trilinear')
+
+    cmd('fslmaths',
+        fm_mag_brain_masked,
+        '-abs',
+        '-bin',
+        fm_rads_brain_mask)
+
+    cmd('fslmaths',
+        fm_rads_brain,
+        '-abs',
+        '-bin',
+        '-mul', fm_rads_brain_mask,
+        fm_rads_brain_mask)
+
+    cmd('fugue',
+        '--loadfmap=%s' % fm_rads_brain,
+        '--mask=%s' % fm_rads_brain_mask,
+        '--unmaskfmap',
+        '--savefmap=%s' % fm_rads_brain_unmasked,
+        '--unwarpdir=%s' % opts.unwarp_dir)
+
+    cmd('applywarp',
+        '-i', fm_rads_brain_unmasked,
+        '-r', t1_head,
+        '--premat=%s' % fm_to_t1_head_mat,
+        '-o', fm_rads_brain_to_t1_head_pad0)
+
+    cmd('fslmaths',
+        fm_rads_brain_to_t1_head_pad0,
+        '-abs',
+        '-bin',
+        fm_rads_brain_to_t1_head_inner_mask)
+
+    cmd('fugue',
+        '--loadfmap=%s' % fm_rads_brain_to_t1_head_pad0,
+        '--mask=%s' % fm_rads_brain_to_t1_head_inner_mask,
+        '--unmaskfmap',
+        '--savefmap=%s' % fm_rads_brain_to_t1_head,
+        '--unwarpdir=%s' % opts.unwarp_dir)
+
+    cmd('imrm', fm_rads_brain_to_t1_head_pad0)
+    cmd('imrm', fm_rads_brain_to_t1_head_inner_mask)
+
     # ################################################
     # SPATIAL NORMALIZATION OF THE T1-WEIGHTED DATASET
     # ################################################
@@ -437,9 +530,6 @@ def main(argv):
         '-searchrz', str(-opts.search), str(opts.search),
         '-interp', 'trilinear')
 
-    assert(dset_exists(t1_brain_to_standard_dset))
-    assert(os.path.isfile(t1_brain_to_standard_mat))
-
     # Apply the resulting transformation to the non-brain-extracted dataset
     cmd('flirt',
         '-in', t1_head,
@@ -449,7 +539,8 @@ def main(argv):
         '-applyxfm',
         '-interp', 'trilinear')
 
-    assert(dset_exists(t1_head_to_standard_dset))
+    print('jfreg2 ends....')
+
 
 if __name__ == '__main__':
     main(sys.argv[1:])
