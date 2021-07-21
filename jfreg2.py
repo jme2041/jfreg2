@@ -107,6 +107,22 @@ def main(argv):
     if flirt_ver < FLIRT_MIN:
         raise RuntimeError('FLIRT %d.%d or newer is required' % FLIRT_MIN)
 
+    # Get FLIRT schedule for BBR
+    bbr_schedule = os.path.abspath(os.path.join(os.environ['FSLDIR'],
+        'etc', 'flirtsch', 'bbr.sch'))
+    if not os.path.isfile(bbr_schedule):
+        raise IOError('Could not find FLIRT BBR schedule: %s' % bbr_schedule)
+
+    # Generate dict that maps unwarp direction to flirt phase encode direction
+    pe_dir = {
+        'x': 1,
+        'y': 2,
+        'z': 3,
+        'x-': -1,
+        'y-': -2,
+        'z-': -3
+    }
+
     parser = argparse.ArgumentParser(
         prog='jfreg2',
         add_help=False,
@@ -131,6 +147,11 @@ def main(argv):
         metavar='T1_HEAD',
         help='T1-weighted dataset in subject space (not brain-extracted)')
 
+    g1.add_argument('--t1-brain-wmseg',
+        required=True,
+        metavar='WMSEG',
+        help='White matter map from FAST segmentation of T1-weighted dataset')
+
     g1.add_argument('--fieldmap-rads',
         required=True,
         metavar='FM_RADS',
@@ -152,6 +173,12 @@ def main(argv):
         metavar='TE',
         help='Echo time (in seconds) of EPI used for functional MRI')
 
+    g1.add_argument('--echo-spacing',
+        type=float,
+        required=True,
+        metavar='ES',
+        help='Effective echo spacing (in seconds) of the EPI used for fMRI')
+
     g1.add_argument('--unwarp-dir',
         required=True,
         choices=['x', 'y', 'z', 'x-', 'y-', 'z-'],
@@ -159,6 +186,12 @@ def main(argv):
         help='Unwarp direction (%(choices)s)')
 
     g2 = parser.add_argument_group('options')
+
+    g2.add_argument('--base-volume',
+        type=int,
+        default=0,
+        metavar='VOL',
+        help='Functional base volume number (0-indexed); default: %(default)d')
 
     g2.add_argument('--standard-brain',
         default='MNI152_T1_2mm_brain.nii.gz',
@@ -192,6 +225,11 @@ def main(argv):
         action='help',
         help='Show this help message and exit')
 
+    parser.add_argument('func',
+        nargs='+',
+        metavar='FUNC',
+        help='Functional MRI dataset(s)')
+
     opts = parser.parse_args(argv)
 
     # Look for the standard template (try FSLDIR as fallback)
@@ -217,6 +255,10 @@ def main(argv):
         raise IOError('Could not find --t1-head dataset: %s' % t1_head)
     print('--t1-head: %s' % t1_head)
 
+    wmseg = os.path.abspath(opts.t1_brain_wmseg)
+    if not dset_exists(wmseg):
+        raise IOError('Could not find --t1-brain-wmseg dataset: %s' % wmseg)
+
     fm_rads = os.path.abspath(opts.fieldmap_rads)
     if not dset_exists(fm_rads):
         raise IOError('Could not find --fieldmap-rads dataset: %s' % fm_rads)
@@ -233,6 +275,10 @@ def main(argv):
         raise IOError('Could not find --fieldmap-mag-head dataset: %s' %
             fm_mag_head)
     print('--fieldmap-mag-head: %s' % fm_mag_head)
+
+    for f in opts.func:
+        if not dset_exists(f):
+            raise IOError('Could not find functional dataset: %s' % f)
 
     # Warn if --fieldmap-mag-brain appears not to be brain-extracted
     print('Checking fieldmap....')
@@ -277,7 +323,6 @@ def main(argv):
         strip_ext(os.path.basename(fm_rads)) + '_brain')
     fm_rads_brain_tmp_fmapfilt = fm_rads_brain + '_tmp_fmapfilt'
     fm_rads_brain_sigloss = fm_rads_brain + '_sigloss'
-
 
     cmd('fslmaths',
         fm_mag_brain,
@@ -536,8 +581,120 @@ def main(argv):
         '-ref', standard_brain,
         '-out', t1_head_to_standard_dset,
         '-init', t1_brain_to_standard_mat,
+        '-nosearch',
         '-applyxfm',
         '-interp', 'trilinear')
+
+    # ###############################
+    # LOOP ON FUNCTIONAL MRI DATASETS
+    # ###############################
+
+    for f in opts.func:
+        print('Processing functional dataset: %s....' % f)
+
+        f_base = os.path.join(outdir, strip_ext(os.path.basename(f)) + '_base')
+        f_base_to_t1_init_mat = f_base + '_to_t1_init.mat'
+        f_base_to_t1_dset = f_base + '_to_t1'
+        f_base_to_t1_warp = f_base_to_t1_dset + '_warp'
+        f_base_to_t1_mat = f_base_to_t1_dset + '.mat'
+        f_base_to_t1_inv_mat = f_base_to_t1_dset + '_inv.mat'
+        f_base_fm_rads_to_base_dset = f_base + '_fm_rads_to_base'
+        f_base_fm_rads_to_base_mat = f_base_fm_rads_to_base_dset + '.mat'
+        f_base_fm_rads_to_base_mask = f_base_fm_rads_to_base_dset + '_mask'
+        f_base_fm_rads_to_base_shift = f_base_fm_rads_to_base_dset + '_shift'
+
+        # Extract base volume and convert to floating-point
+        cmd('fslroi',
+            f,
+            f_base,
+            str(opts.base_volume),
+            str(1))
+
+        cmd('fslmaths',
+            f_base,
+            f_base,
+            '-odt',
+            'float')
+
+        # ##########################################
+        # FUNCTIONAL TO STRUCTURAL (T1) REGISTRATION
+        # ##########################################
+
+        print('Registering functional base volume to T1-weighted dataset....')
+
+        # Initial functional base to T1 (brain) alignment using 6 DOF
+        cmd('flirt',
+            '-in', f_base,
+            '-ref', t1_brain,
+            '-omat', f_base_to_t1_init_mat,
+            '-cost', 'corratio',
+            '-dof', str(6),
+            '-searchrx', str(-opts.search), str(opts.search),
+            '-searchry', str(-opts.search), str(opts.search),
+            '-searchrz', str(-opts.search), str(opts.search))
+
+        # Register functional base volume to T1 (head) using BBR and field map
+        cmd('flirt',
+            '-in', f_base,
+            '-ref', t1_head,
+            '-omat', f_base_to_t1_mat,
+            '-cost', 'bbr',
+            '-dof', str(6),
+            '-wmseg', wmseg,
+            '-init', f_base_to_t1_init_mat,
+            '-nosearch',
+            '-schedule', bbr_schedule,
+            '-echospacing', str(opts.echo_spacing),
+            '-pedir', str(pe_dir[opts.unwarp_dir]),
+            '-fieldmap', fm_rads_brain_to_t1_head)
+
+        # Generate warp fields for use with other registrations
+        cmd('convert_xfm',
+            '-omat', f_base_to_t1_inv_mat,
+            '-inverse', f_base_to_t1_mat)
+
+        cmd('convert_xfm',
+            '-omat', f_base_fm_rads_to_base_mat,
+            '-concat',
+            f_base_to_t1_inv_mat,
+            fm_to_t1_head_mat)
+
+        cmd('applywarp',
+            '-i', fm_rads_brain_unmasked,
+            '-r', f_base,
+            '--premat=%s' % f_base_fm_rads_to_base_mat,
+            '-o', f_base_fm_rads_to_base_dset)
+
+        cmd('fslmaths',
+            f_base_fm_rads_to_base_dset,
+            '-abs',
+            '-bin',
+            f_base_fm_rads_to_base_mask)
+
+        cmd('fugue',
+            '--loadfmap=%s' % f_base_fm_rads_to_base_dset,
+            '--mask=%s' % f_base_fm_rads_to_base_mask,
+            '--saveshift=%s' % f_base_fm_rads_to_base_shift,
+            '--unmaskshift',
+            '--dwell=%s' % str(opts.echo_spacing),
+            '--unwarpdir=%s' % opts.unwarp_dir)
+
+        cmd('convertwarp',
+            '-r', t1_head,
+            '-s', f_base_fm_rads_to_base_shift,
+            '--postmat=%s' % f_base_to_t1_mat,
+            '-o', f_base_to_t1_warp,
+            '--shiftdir=%s' % opts.unwarp_dir,
+            '--relout')
+
+        # Apply the warp field: This does the final base to T1 registration
+        cmd('applywarp',
+            '-i', f_base,
+            '-r', t1_head,
+            '-o', f_base_to_t1_dset,
+            '-w', f_base_to_t1_warp,
+            '--interp=spline',
+            '--rel')
 
     print('jfreg2 ends....')
 
