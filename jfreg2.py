@@ -42,6 +42,7 @@ import re
 import shutil
 import argparse
 import subprocess
+import glob
 
 
 def cmd(*cmd, echo=True, capture_output=False):
@@ -593,15 +594,6 @@ def main(argv):
         print('Processing functional dataset: %s....' % f)
 
         f_base = os.path.join(outdir, strip_ext(os.path.basename(f)) + '_base')
-        f_base_to_t1_init_mat = f_base + '_to_t1_init.mat'
-        f_base_to_t1_dset = f_base + '_to_t1'
-        f_base_to_t1_warp = f_base_to_t1_dset + '_warp'
-        f_base_to_t1_mat = f_base_to_t1_dset + '.mat'
-        f_base_to_t1_inv_mat = f_base_to_t1_dset + '_inv.mat'
-        f_base_fm_rads_to_base_dset = f_base + '_fm_rads_to_base'
-        f_base_fm_rads_to_base_mat = f_base_fm_rads_to_base_dset + '.mat'
-        f_base_fm_rads_to_base_mask = f_base_fm_rads_to_base_dset + '_mask'
-        f_base_fm_rads_to_base_shift = f_base_fm_rads_to_base_dset + '_shift'
 
         # Extract base volume and convert to floating-point
         cmd('fslroi',
@@ -621,6 +613,16 @@ def main(argv):
         # ##########################################
 
         print('Registering functional base volume to T1-weighted dataset....')
+
+        f_base_to_t1_init_mat = f_base + '_to_t1_init.mat'
+        f_base_to_t1_dset = f_base + '_to_t1'
+        f_base_to_t1_warp = f_base_to_t1_dset + '_warp'
+        f_base_to_t1_mat = f_base_to_t1_dset + '.mat'
+        f_base_to_t1_inv_mat = f_base_to_t1_dset + '_inv.mat'
+        f_base_fm_rads_to_base_dset = f_base + '_fm_rads_to_base'
+        f_base_fm_rads_to_base_mat = f_base_fm_rads_to_base_dset + '.mat'
+        f_base_fm_rads_to_base_mask = f_base_fm_rads_to_base_dset + '_mask'
+        f_base_fm_rads_to_base_shift = f_base_fm_rads_to_base_dset + '_shift'
 
         # Initial functional base to T1 (brain) alignment using 6 DOF
         cmd('flirt',
@@ -695,6 +697,32 @@ def main(argv):
             '-w', f_base_to_t1_warp,
             '--interp=spline',
             '--rel')
+
+        # #################
+        # MOTION CORRECTION
+        # #################
+
+        print('Motion correcting the functional dataset....')
+
+        f_mc = os.path.join(outdir, strip_ext(os.path.basename(f)) + '_mc')
+        f_mc_mat = f_mc + '.mat'
+        f_mc_cat = f_mc + '.cat'
+
+        cmd('mcflirt',
+            '-in', f,
+            '-out', f_mc,
+            '-reffile', f_base,
+            '-mats',
+            '-plots')
+
+        # Concatenate the transformation matrices into one big file
+        with open(f_mc_cat, 'wb') as catfile:
+            for i in sorted(glob.glob('%s/*' % f_mc_mat)):
+                with open(i, 'rb') as matfile:
+                    shutil.copyfileobj(matfile, catfile)
+
+        cmd('imrm', f_mc)
+        shutil.rmtree(f_mc_mat)
 
     print('jfreg2 ends....')
 
