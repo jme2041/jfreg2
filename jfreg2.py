@@ -207,12 +207,6 @@ def main(argv):
         metavar='DEG',
         help='Search angle in degrees (%(choices)s; default: %(default)d)')
 
-    g2.add_argument('--sigloss-thresh',
-        type=float,
-        default=10.0,
-        metavar='SIGLOSS',
-        help='Signal loss threshold (percent); default: %(default).2f')
-
     g2.add_argument('--overwrite',
         action='store_true',
         help='Replace output directory if it already exists')
@@ -319,11 +313,9 @@ def main(argv):
     fm_mag_brain_mask50 = fm_mag_brain_mask + '50'
     fm_mag_brain_mask_ero = fm_mag_brain_mask + '_ero'
     fm_mag_brain_masked = fm_mag_brain_mask + 'ed'
-    fm_mag_brain_masked_siglossed = fm_mag_brain_masked + '_siglossed'
     fm_rads_brain = os.path.join(outdir,
         strip_ext(os.path.basename(fm_rads)) + '_brain')
     fm_rads_brain_tmp_fmapfilt = fm_rads_brain + '_tmp_fmapfilt'
-    fm_rads_brain_sigloss = fm_rads_brain + '_sigloss'
 
     cmd('fslmaths',
         fm_mag_brain,
@@ -440,26 +432,6 @@ def main(argv):
         '-sub', str(median),
         '-mas', fm_mag_brain_mask,
         fm_rads_brain)
-
-    # Get signal loss estimate
-    cmd('sigloss',
-        '-i', fm_rads_brain,
-        '--te=%f' % opts.echo_time,
-        '-m', fm_mag_brain_mask,
-        '-s', fm_rads_brain_sigloss)
-
-    sigloss_thresh = 1 - opts.sigloss_thresh/100.0
-    cmd('fslmaths',
-        fm_rads_brain_sigloss,
-        '-mul', fm_mag_brain_masked,
-        fm_mag_brain_masked_siglossed,
-        '-odt', 'float')
-
-    cmd('fslmaths',
-        fm_rads_brain_sigloss,
-        '-thr', str(sigloss_thresh),
-        fm_rads_brain_sigloss,
-        '-odt', 'float')
 
     cmd('imrm', fm_rads_brain_tmp_fmapfilt)
     cmd('imrm', fm_mag_brain_mask_ero)
