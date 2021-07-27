@@ -211,6 +211,10 @@ def main(argv):
         action='store_true',
         help='Replace output directory if it already exists')
 
+    g2.add_argument('--keep-all',
+        action='store_true',
+        help='Keep intermediate files')
+
     g2.add_argument('--version',
         action='version',
         version=version,
@@ -298,6 +302,9 @@ def main(argv):
             raise IOError('Output directory already exists: %s' % outdir)
     os.mkdir(outdir)
 
+    # Temporary datasets and files
+    tmp = []
+
     # ####################
     # PREPROCESS FIELD MAP
     # ####################
@@ -316,6 +323,17 @@ def main(argv):
     fm_rads_brain = os.path.join(outdir,
         strip_ext(os.path.basename(fm_rads)) + '_brain')
     fm_rads_brain_tmp_fmapfilt = fm_rads_brain + '_tmp_fmapfilt'
+
+    tmp += [
+        fm_mag_brain_mask,
+        fm_mag_brain_mask_inv,
+        fm_mag_brain_mask_idx,
+        fm_mag_brain_mask50,
+        fm_mag_brain_mask_ero,
+        fm_mag_brain_masked,
+        fm_rads_brain,
+        fm_rads_brain_tmp_fmapfilt
+    ]
 
     cmd('fslmaths',
         fm_mag_brain,
@@ -433,12 +451,6 @@ def main(argv):
         '-mas', fm_mag_brain_mask,
         fm_rads_brain)
 
-    cmd('imrm', fm_rads_brain_tmp_fmapfilt)
-    cmd('imrm', fm_mag_brain_mask_ero)
-    cmd('imrm', fm_mag_brain_mask50)
-    cmd('imrm', fm_mag_brain_mask_idx)
-    cmd('imrm', fm_mag_brain_mask_inv)
-
     # #####################################
     # REGISTER FIELD MAP TO STRUCTURAL (T1)
     # #####################################
@@ -458,6 +470,14 @@ def main(argv):
     fm_rads_brain_to_t1_head_pad0 = fm_rads_brain_to_t1_head + '_pad0'
     fm_rads_brain_to_t1_head_inner_mask = (fm_rads_brain_to_t1_head +
         '_inner_mask')
+
+    tmp += [
+        fm_to_t1_brain_init_mat,
+        fm_rads_brain_mask,
+        fm_rads_brain_unmasked,
+        fm_rads_brain_to_t1_head_pad0,
+        fm_rads_brain_to_t1_head_inner_mask
+    ]
 
     cmd('flirt',
         '-in', fm_mag_brain_masked,
@@ -518,9 +538,6 @@ def main(argv):
         '--unmaskfmap',
         '--savefmap=%s' % fm_rads_brain_to_t1_head,
         '--unwarpdir=%s' % opts.unwarp_dir)
-
-    cmd('imrm', fm_rads_brain_to_t1_head_pad0)
-    cmd('imrm', fm_rads_brain_to_t1_head_inner_mask)
 
     # ################################################
     # SPATIAL NORMALIZATION OF THE T1-WEIGHTED DATASET
@@ -595,6 +612,15 @@ def main(argv):
         f_base_fm_rads_to_base_mat = f_base_fm_rads_to_base_dset + '.mat'
         f_base_fm_rads_to_base_mask = f_base_fm_rads_to_base_dset + '_mask'
         f_base_fm_rads_to_base_shift = f_base_fm_rads_to_base_dset + '_shift'
+
+        tmp += [
+            f_base_to_t1_init_mat,
+            f_base_to_t1_inv_mat,
+            f_base_fm_rads_to_base_dset,
+            f_base_fm_rads_to_base_mat,
+            f_base_fm_rads_to_base_mask,
+            f_base_fm_rads_to_base_shift
+        ]
 
         # Initial functional base to T1 (brain) alignment using 6 DOF
         cmd('flirt',
@@ -680,6 +706,8 @@ def main(argv):
         f_mc_mat = f_mc + '.mat'
         f_mc_cat = f_mc + '.cat'
 
+        tmp += [ f_mc, f_mc_mat ]
+
         cmd('mcflirt',
             '-in', f,
             '-out', f_mc,
@@ -693,8 +721,16 @@ def main(argv):
                 with open(i, 'rb') as matfile:
                     shutil.copyfileobj(matfile, catfile)
 
-        cmd('imrm', f_mc)
-        shutil.rmtree(f_mc_mat)
+    if not opts.keep_all:
+        for t in tmp:
+            if dset_exists(t):
+                cmd('imrm', t, echo=False)
+            elif os.path.isdir(t):
+                shutil.rmtree(t)
+            elif os.path.isfile(t):
+                os.remove(t)
+            else:
+                raise RuntimeError('Could not remove %s' % t)
 
     print('jfreg2 ends....')
 
