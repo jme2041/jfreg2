@@ -108,6 +108,12 @@ def main(argv):
     if flirt_ver < FLIRT_MIN:
         raise RuntimeError('FLIRT %d.%d or newer is required' % FLIRT_MIN)
 
+    # Look for the standard template (MNI152_T1_2mm_brain)
+    standard_brain = os.path.abspath(os.path.join(os.environ['FSLDIR'], 'data',
+            'standard', 'MNI152_T1_2mm_brain'))
+    if not dset_exists(standard_brain):
+        raise IOError('Could not find standard template: %s' % standard_brain)
+
     # Get FLIRT schedule for BBR
     bbr_schedule = os.path.abspath(os.path.join(os.environ['FSLDIR'],
         'etc', 'flirtsch', 'bbr.sch'))
@@ -153,6 +159,12 @@ def main(argv):
         metavar='WMSEG',
         help='White matter map from FAST segmentation of T1-weighted dataset')
 
+    g1.add_argument('--t1-to-standard-mat',
+        required=True,
+        metavar='MAT',
+        help='''Transformation matrix for T1-weighted dataset to MNI152_T1_2mm
+        (from flirt linear registration)''')
+
     g1.add_argument('--fieldmap-rads',
         required=True,
         metavar='FM_RADS',
@@ -194,11 +206,12 @@ def main(argv):
         metavar='VOL',
         help='Functional base volume number (0-indexed); default: %(default)d')
 
-    g2.add_argument('--standard-brain',
-        default='MNI152_T1_2mm_brain.nii.gz',
-        metavar='STANDARD_BRAIN',
-        help='''Standard space template (T1-weighted and brain-extracted);
-        default: %(default)s''')
+    g2.add_argument('--output-resolution',
+        type=float,
+        default=2.0,
+        metavar='MM',
+        help='''Output resolution for functional dataset (mm;
+        default: %(default)1.1f)''')
 
     g2.add_argument('--search',
         type=int,
@@ -206,6 +219,13 @@ def main(argv):
         choices=[0, 90, 180],
         metavar='DEG',
         help='Search angle in degrees (%(choices)s; default: %(default)d)')
+
+    g2.add_argument('--final-interp',
+        default='trilinear',
+        choices=['nn', 'trilinear', 'sinc', 'spline'],
+        metavar='INTERP',
+        help='''Interpolation method for functional to standard warp
+        (%(choices)s; default: %(default)s)''')
 
     g2.add_argument('--overwrite',
         action='store_true',
@@ -231,17 +251,14 @@ def main(argv):
 
     opts = parser.parse_args(argv)
 
-    # Look for the standard template (try FSLDIR as fallback)
-    standard_brain = opts.standard_brain
-    if not dset_exists(standard_brain):
-        st2 = os.path.abspath(os.path.join(os.environ['FSLDIR'], 'data',
-            'standard', standard_brain))
-    if not dset_exists(st2):
-        raise IOError('Could not find --standard-brain dataset: %s' %
-            standard_brain)
-    standard_brain = st2
-
     print('jfreg2 begins....')
+
+    # Look for T1-to-standard transformation matrix
+    t1_to_standard_mat = os.path.abspath(opts.t1_to_standard_mat)
+    if not os.path.isfile(t1_to_standard_mat):
+        raise IOError('Could not find --t1-to-standard-mat file: %s' %
+            t1_to_standard_mat)
+    print('--t1-to-standard-mat: %s' % t1_to_standard_mat)
 
     # Look for input datasets
     t1_brain = os.path.abspath(opts.t1_brain)
@@ -257,6 +274,7 @@ def main(argv):
     wmseg = os.path.abspath(opts.t1_brain_wmseg)
     if not dset_exists(wmseg):
         raise IOError('Could not find --t1-brain-wmseg dataset: %s' % wmseg)
+    print('--t1-brain-wmseg: %s' % wmseg)
 
     fm_rads = os.path.abspath(opts.fieldmap_rads)
     if not dset_exists(fm_rads):
@@ -278,6 +296,7 @@ def main(argv):
     for f in opts.func:
         if not dset_exists(f):
             raise IOError('Could not find functional dataset: %s' % f)
+        print('functional dataset: %s' % f)
 
     # Warn if --fieldmap-mag-brain appears not to be brain-extracted
     print('Checking fieldmap....')
@@ -304,6 +323,19 @@ def main(argv):
 
     # Temporary datasets and files
     tmp = []
+
+    # Create a dataset in standard space at the desired output resolution
+    standard_brain_ores = os.path.join(outdir,
+        os.path.basename(standard_brain)) + '_ores'
+
+    tmp += [ standard_brain_ores ]
+
+    cmd('flirt',
+        '-in', standard_brain,
+        '-ref', standard_brain,
+        '-out', standard_brain_ores,
+        '-applyisoxfm', str(opts.output_resolution),
+        '-interp', 'trilinear')
 
     # ####################
     # PREPROCESS FIELD MAP
@@ -539,42 +571,6 @@ def main(argv):
         '--savefmap=%s' % fm_rads_brain_to_t1_head,
         '--unwarpdir=%s' % opts.unwarp_dir)
 
-    # ################################################
-    # SPATIAL NORMALIZATION OF THE T1-WEIGHTED DATASET
-    # ################################################
-
-    print('Spatially normalizing T1-weighted dataset....')
-
-    t1_brain_to_standard_dset = os.path.join(outdir,
-        strip_ext(os.path.basename(t1_brain)) + '_to_standard')
-    t1_brain_to_standard_mat = t1_brain_to_standard_dset + '.mat'
-    t1_head_to_standard_dset = os.path.join(outdir,
-        strip_ext(os.path.basename(t1_head)) + '_to_standard')
-
-    # Register the brain-extracted T1-weighted dataset to the standard
-    # template. Use 12-parameter affine transformation.
-    cmd('flirt',
-        '-in', t1_brain,
-        '-ref', standard_brain,
-        '-out', t1_brain_to_standard_dset,
-        '-omat', t1_brain_to_standard_mat,
-        '-cost', 'corratio',
-        '-dof', str(12),
-        '-searchrx', str(-opts.search), str(opts.search),
-        '-searchry', str(-opts.search), str(opts.search),
-        '-searchrz', str(-opts.search), str(opts.search),
-        '-interp', 'trilinear')
-
-    # Apply the resulting transformation to the non-brain-extracted dataset
-    cmd('flirt',
-        '-in', t1_head,
-        '-ref', standard_brain,
-        '-out', t1_head_to_standard_dset,
-        '-init', t1_brain_to_standard_mat,
-        '-nosearch',
-        '-applyxfm',
-        '-interp', 'trilinear')
-
     # ###############################
     # LOOP ON FUNCTIONAL MRI DATASETS
     # ###############################
@@ -720,6 +716,41 @@ def main(argv):
             for i in sorted(glob.glob('%s/*' % f_mc_mat)):
                 with open(i, 'rb') as matfile:
                     shutil.copyfileobj(matfile, catfile)
+
+        # #########################################
+        # WARP FUNCTIONAL DATASET TO STANDARD SPACE
+        # #########################################
+
+        f_to_standard_dset = os.path.join(outdir,
+            strip_ext(os.path.basename(f)) + '_to_standard')
+        f_base_to_standard_mat = f_base + '_to_standard.mat'
+        f_base_to_standard_warp = f_base + '_to_standard_warp'
+
+        # Concatenate base to T1 and T1 to standard transformation matrices
+        cmd('convert_xfm',
+            '-omat', f_base_to_standard_mat,
+            '-concat', t1_to_standard_mat,
+            f_base_to_t1_mat)
+
+        # Combine the matrix with the shift map to generate warp field
+        cmd('convertwarp',
+            '--ref=%s' % standard_brain_ores,
+            '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
+            '--premat=%s' % f_base_to_standard_mat,
+            '--out=%s' % f_base_to_standard_warp,
+            '--relout',
+            '--shiftdir=%s' % opts.unwarp_dir)
+
+        # Apply the warp. Use motion correction matrices as premat.
+        cmd('applywarp',
+            '-i', f,
+            '--premat=%s' % f_mc_cat,
+            '-r', standard_brain_ores,
+            '-o', f_to_standard_dset,
+            '-w', f_base_to_standard_warp,
+            '--rel',
+            '--paddingsize=%s' % str(1),
+            '--interp=%s' % opts.final_interp)
 
     if not opts.keep_all:
         for t in tmp:
