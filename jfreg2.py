@@ -200,6 +200,12 @@ def main(argv):
 
     g2 = parser.add_argument_group('options')
 
+    g2.add_argument('--t1-to-standard-warp',
+        required=False,
+        metavar='WARP',
+        help='''Warp field for T1-weighted dataset to MNI152_T1_2mm (from fnirt
+        nonlinear registration)''')
+
     g2.add_argument('--base-volume',
         type=int,
         default=0,
@@ -259,6 +265,15 @@ def main(argv):
         raise IOError('Could not find --t1-to-standard-mat file: %s' %
             t1_to_standard_mat)
     print('--t1-to-standard-mat: %s' % t1_to_standard_mat)
+
+    # Look for T1-to-standard warp field
+    t1_to_standard_warp = opts.t1_to_standard_warp
+    if t1_to_standard_warp:
+        t1_to_standard_warp = os.path.abspath(t1_to_standard_warp)
+        if not dset_exists(t1_to_standard_warp):
+            raise IOError('Could not find --t1-to-standard-warp file: %s' %
+                t1_to_standard_warp)
+    print('--t1-to-standard-warp: %s' % t1_to_standard_warp)
 
     # Look for input datasets
     t1_brain = os.path.abspath(opts.t1_brain)
@@ -732,14 +747,24 @@ def main(argv):
             '-concat', t1_to_standard_mat,
             f_base_to_t1_mat)
 
-        # Combine the matrix with the shift map to generate warp field
-        cmd('convertwarp',
-            '--ref=%s' % standard_brain_ores,
-            '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
-            '--premat=%s' % f_base_to_standard_mat,
-            '--out=%s' % f_base_to_standard_warp,
-            '--relout',
-            '--shiftdir=%s' % opts.unwarp_dir)
+        # Generate functional to standard warp field
+        if t1_to_standard_warp:
+            cmd('convertwarp',
+                '--ref=%s' % standard_brain_ores,
+                '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
+                '--premat=%s' % f_base_to_t1_mat,
+                '--warp1=%s' % t1_to_standard_warp,
+                '--out=%s' % f_base_to_standard_warp,
+                '--relout',
+                '--shiftdir=%s' % opts.unwarp_dir)
+        else:
+            cmd('convertwarp',
+                '--ref=%s' % standard_brain_ores,
+                '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
+                '--premat=%s' % f_base_to_standard_mat,
+                '--out=%s' % f_base_to_standard_warp,
+                '--relout',
+                '--shiftdir=%s' % opts.unwarp_dir)
 
         # Apply the warp. Use motion correction matrices as premat.
         cmd('applywarp',
