@@ -736,6 +736,8 @@ def main(argv):
         # WARP FUNCTIONAL DATASET TO STANDARD SPACE
         # #########################################
 
+        print('Warping functional dataset to standard space....')
+
         f_to_standard_dset = os.path.join(outdir,
             strip_ext(os.path.basename(f)) + '_to_standard')
         f_base_to_standard_mat = f_base + '_to_standard.mat'
