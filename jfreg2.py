@@ -629,8 +629,7 @@ def main(argv):
             f_base_to_t1_inv_mat,
             f_base_fm_rads_to_base_dset,
             f_base_fm_rads_to_base_mat,
-            f_base_fm_rads_to_base_mask,
-            f_base_fm_rads_to_base_shift
+            f_base_fm_rads_to_base_mask
         ]
 
         # Initial functional base to T1 (brain) alignment using 6 DOF
