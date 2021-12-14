@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 # jfreg2: Joint fMRI Registration (Version 2)
 #
 # Copyright (c) 2021, Jeffrey M. Engelmann
@@ -43,6 +41,8 @@ import shutil
 import argparse
 import subprocess
 import glob
+
+__version__ = '2.0.0 (pre-release)'
 
 
 def cmd(*cmd, echo=True, capture_output=False):
@@ -93,11 +93,17 @@ def strip_ext(path):
     return path
 
 
-def main(argv):
-    """Main jfreg2 routine"""
-    version = '2.0.0 (pre-release)'
+def delete(x):
+    if dset_exists(x):
+        cmd('imrm', x, echo=False)
+    elif os.path.isdir(x):
+        shutil.rmtree(x)
+    elif os.path.isfile(x):
+        os.remove(x)
 
-    # Check FLIRT version
+
+def check_flirt():
+    """Check FLIRT version"""
     FLIRT_MIN = (6, 0)
     capture = cmd('flirt', '-version', echo=False, capture_output=True)
     flirt_verstr = capture.stdout.decode().splitlines()[0]
@@ -108,6 +114,7 @@ def main(argv):
     if flirt_ver < FLIRT_MIN:
         raise RuntimeError('FLIRT %d.%d or newer is required' % FLIRT_MIN)
 
+def placeholder(argv):
     # Look for the standard template (MNI152_T1_2mm_brain)
     standard_brain = os.path.abspath(os.path.join(os.environ['FSLDIR'], 'data',
             'standard', 'MNI152_T1_2mm_brain'))
@@ -352,240 +359,6 @@ def main(argv):
         '-applyisoxfm', str(opts.output_resolution),
         '-interp', 'trilinear')
 
-    # ####################
-    # PREPROCESS FIELD MAP
-    # ####################
-
-    # These steps come from mainfeatreg's preprocessFieldmaps subroutine
-
-    print('Preprocessing fieldmap....')
-
-    fm_mag_brain_mask = os.path.join(outdir,
-        strip_ext(os.path.basename(fm_mag_brain)) + '_mask')
-    fm_mag_brain_mask_inv = fm_mag_brain_mask + '_inv'
-    fm_mag_brain_mask_idx = fm_mag_brain_mask + '_idx'
-    fm_mag_brain_mask50 = fm_mag_brain_mask + '50'
-    fm_mag_brain_mask_ero = fm_mag_brain_mask + '_ero'
-    fm_mag_brain_masked = fm_mag_brain_mask + 'ed'
-    fm_rads_brain = os.path.join(outdir,
-        strip_ext(os.path.basename(fm_rads)) + '_brain')
-    fm_rads_brain_tmp_fmapfilt = fm_rads_brain + '_tmp_fmapfilt'
-
-    tmp += [
-        fm_mag_brain_mask,
-        fm_mag_brain_mask_inv,
-        fm_mag_brain_mask_idx,
-        fm_mag_brain_mask50,
-        fm_mag_brain_mask_ero,
-        fm_mag_brain_masked,
-        fm_rads_brain,
-        fm_rads_brain_tmp_fmapfilt
-    ]
-
-    cmd('fslmaths',
-        fm_mag_brain,
-        '-bin',
-        fm_mag_brain_mask,
-        '-odt', 'short')
-
-    cmd('fslmaths',
-        fm_rads,
-        '-abs',
-        '-bin',
-        '-mas', fm_mag_brain_mask,
-        '-mul', str(-1),
-        '-add', str(1),
-        '-bin',
-        fm_mag_brain_mask_inv)
-
-    cmd('cluster',
-        '-i', fm_mag_brain_mask_inv,
-        '-t', str(0.5),
-        '--no_table',
-        '-o', fm_mag_brain_mask_idx)
-
-    capture = cmd('fslstats',
-        fm_mag_brain_mask_idx,
-        '-R',
-        capture_output=True)
-    maxidx = float(capture.stdout.decode().split()[1])
-
-    cmd('fslmaths',
-        fm_mag_brain_mask_idx,
-        '-thr', str(maxidx),
-        '-bin',
-        '-mul', str(-1),
-        '-add', str(1),
-        '-bin',
-        '-mas', fm_mag_brain_mask,
-        fm_mag_brain_mask)
-
-    capture = cmd('fslstats',
-        fm_rads,
-        '-k', fm_mag_brain_mask,
-        '-P', str(50),
-        capture_output=True)
-    mean = float(capture.stdout.decode())
-
-    cmd('fslmaths',
-        fm_rads,
-        '-sub', str(mean),
-        '-mas', fm_mag_brain_mask,
-        fm_rads_brain)
-
-    capture = cmd('fslstats',
-        fm_mag_brain,
-        '-P', str(98),
-        capture_output=True)
-    thresh50 = float(capture.stdout.decode())/2.0
-
-    cmd('fslmaths',
-        fm_mag_brain,
-        '-thr', str(thresh50),
-        fm_mag_brain_mask50)
-
-    cmd('fslmaths',
-        fm_mag_brain_mask,
-        '-ero',
-        fm_mag_brain_mask_ero)
-
-    cmd('fslmaths',
-        fm_mag_brain_mask_ero,
-        '-add', fm_mag_brain_mask50,
-        '-thr', str(0.5),
-        '-bin',
-        fm_mag_brain_mask)
-
-    cmd('fslmaths',
-        fm_rads_brain,
-        '-mas', fm_mag_brain_mask,
-        fm_rads_brain)
-
-    cmd('fslmaths',
-        fm_mag_brain,
-        '-mas', fm_mag_brain_mask,
-        fm_mag_brain_masked)
-
-    cmd('fslmaths',
-        fm_mag_brain_mask,
-        '-ero',
-        fm_mag_brain_mask_ero)
-
-    cmd('fugue',
-        '--loadfmap=%s' % fm_rads_brain,
-        '--savefmap=%s' % fm_rads_brain_tmp_fmapfilt,
-        '--mask=%s' % fm_mag_brain_mask,
-        '--despike',
-        '--despikethreshold=2.1')
-
-    cmd('fslmaths',
-        fm_rads_brain,
-        '-sub', fm_rads_brain_tmp_fmapfilt,
-        '-mas', fm_mag_brain_mask_ero,
-        '-add', fm_rads_brain_tmp_fmapfilt,
-        fm_rads_brain)
-
-    capture = cmd('fslstats',
-        fm_rads_brain,
-        '-k', fm_mag_brain_mask,
-        '-P', str(50),
-        capture_output=True)
-    median = float(capture.stdout.decode())
-
-    cmd('fslmaths',
-        fm_rads_brain,
-        '-sub', str(median),
-        '-mas', fm_mag_brain_mask,
-        fm_rads_brain)
-
-    # #####################################
-    # REGISTER FIELD MAP TO STRUCTURAL (T1)
-    # #####################################
-
-    # These steps are based on FSL's epi_reg
-
-    print('Registering fieldmap to T1-weighted dataset....')
-
-    fm_to_t1_brain_init_mat = os.path.join(outdir, strip_ext(os.path.basename(
-        fm_mag_brain_masked)) + '_to_t1_brain_init.mat')
-    fm_to_t1_head_dset = os.path.join(outdir, strip_ext(os.path.basename(
-        fm_mag_head)) + '_to_t1_head')
-    fm_to_t1_head_mat = fm_to_t1_head_dset + '.mat'
-    fm_rads_brain_mask = fm_rads_brain + '_mask'
-    fm_rads_brain_unmasked = fm_rads_brain + '_unmasked'
-    fm_rads_brain_to_t1_head = fm_rads_brain + '_to_t1_head'
-    fm_rads_brain_to_t1_head_pad0 = fm_rads_brain_to_t1_head + '_pad0'
-    fm_rads_brain_to_t1_head_inner_mask = (fm_rads_brain_to_t1_head +
-        '_inner_mask')
-
-    tmp += [
-        fm_to_t1_brain_init_mat,
-        fm_rads_brain_mask,
-        fm_rads_brain_unmasked,
-        fm_rads_brain_to_t1_head_pad0,
-        fm_rads_brain_to_t1_head_inner_mask
-    ]
-
-    cmd('flirt',
-        '-in', fm_mag_brain_masked,
-        '-ref', t1_brain,
-        '-omat', fm_to_t1_brain_init_mat,
-        '-cost', 'corratio',
-        '-dof', str(6),
-        '-searchrx', str(-opts.search), str(opts.search),
-        '-searchry', str(-opts.search), str(opts.search),
-        '-searchrz', str(-opts.search), str(opts.search))
-
-    cmd('flirt',
-        '-in', fm_mag_head,
-        '-ref', t1_head,
-        '-out', fm_to_t1_head_dset,
-        '-omat', fm_to_t1_head_mat,
-        '-cost', 'corratio',
-        '-dof', str(6),
-        '-init', fm_to_t1_brain_init_mat,
-        '-nosearch',
-        '-interp', 'trilinear')
-
-    cmd('fslmaths',
-        fm_mag_brain_masked,
-        '-abs',
-        '-bin',
-        fm_rads_brain_mask)
-
-    cmd('fslmaths',
-        fm_rads_brain,
-        '-abs',
-        '-bin',
-        '-mul', fm_rads_brain_mask,
-        fm_rads_brain_mask)
-
-    cmd('fugue',
-        '--loadfmap=%s' % fm_rads_brain,
-        '--mask=%s' % fm_rads_brain_mask,
-        '--unmaskfmap',
-        '--savefmap=%s' % fm_rads_brain_unmasked,
-        '--unwarpdir=%s' % opts.unwarp_dir)
-
-    cmd('applywarp',
-        '-i', fm_rads_brain_unmasked,
-        '-r', t1_head,
-        '--premat=%s' % fm_to_t1_head_mat,
-        '-o', fm_rads_brain_to_t1_head_pad0)
-
-    cmd('fslmaths',
-        fm_rads_brain_to_t1_head_pad0,
-        '-abs',
-        '-bin',
-        fm_rads_brain_to_t1_head_inner_mask)
-
-    cmd('fugue',
-        '--loadfmap=%s' % fm_rads_brain_to_t1_head_pad0,
-        '--mask=%s' % fm_rads_brain_to_t1_head_inner_mask,
-        '--unmaskfmap',
-        '--savefmap=%s' % fm_rads_brain_to_t1_head,
-        '--unwarpdir=%s' % opts.unwarp_dir)
-
     # ###############################
     # LOOP ON FUNCTIONAL MRI DATASETS
     # ###############################
@@ -790,7 +563,3 @@ def main(argv):
                 raise RuntimeError('Could not remove %s' % t)
 
     print('jfreg2 ends....')
-
-
-if __name__ == '__main__':
-    main(sys.argv[1:])
