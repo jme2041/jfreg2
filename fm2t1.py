@@ -47,6 +47,7 @@ import sys
 import os
 import argparse
 
+
 def fm2t1(argv):
     '''
     Register field map to T1-weighted brain
@@ -58,7 +59,7 @@ def fm2t1(argv):
     check_flirt()
 
     parser = argparse.ArgumentParser(
-            prog='jfreg2',
+            prog='fm2t1.py',
             add_help=False,
             allow_abbrev=False,
             description=fm2t1.__doc__,
