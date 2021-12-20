@@ -50,11 +50,12 @@ import argparse
 
 def fm2t1(argv):
     '''
-    Register field map to T1-weighted brain
+Register field map to T1-weighted brain
 
-    Input files must be in the current working directory.
-    Output files are saved to the current working directory.
-    '''
+Output datasets and files:
+PREFIX_fm_mag_brain_to_t1_brain      Fieldmap (magnitude) registered to T1
+PREFIX_fm_rads_brain_to_t1_brain     Fieldmap (phase) registered to T1
+PREFIX_fm_mag_brain_to_t1_brain.mat  Transformation matrix (fieldmap to T1)'''
 
     check_flirt()
 
@@ -76,7 +77,7 @@ def fm2t1(argv):
     g1.add_argument('--fm-rads',
             required=True,
             metavar='FM_RADS',
-            help='Field map in units of radians/second (phase-reconstructed)')
+            help='Field map in units of radians/second (not brain-extracted)')
 
     g1.add_argument('--fm-mag-brain',
             required=True,
@@ -86,8 +87,13 @@ def fm2t1(argv):
     g1.add_argument('--unwarp-dir',
         required=True,
         choices=['x', 'y', 'z', 'x-', 'y-', 'z-'],
-        metavar='UNWARP_DIR',
+        metavar='DIR',
         help='Unwarp direction (%(choices)s)')
+
+    g1.add_argument('--prefix',
+            required=True,
+            metavar='PREFIX',
+            help='Output prefix')
 
     g2 = parser.add_argument_group('options')
 
@@ -120,30 +126,30 @@ def fm2t1(argv):
     print('jfreg2 begins....')
 
     # Look for input datasets
-    t1_brain = strip_ext(os.path.basename(opts.t1_brain))
+    t1_brain = strip_ext(opts.t1_brain)
     if not dset_exists(t1_brain):
         raise IOError('Could not find --t1-brain: %s' % t1_brain)
     print('--t1-brain: %s' % t1_brain)
 
-    fm_rads = strip_ext(os.path.basename(opts.fm_rads))
+    fm_rads = strip_ext(opts.fm_rads)
     if not dset_exists(fm_rads):
         raise IOError('Could not find --fm-rads: %s' % fm_rads)
     print('--fm-rads: %s' % fm_rads)
 
-    fm_mag_brain = strip_ext(os.path.basename(opts.fm_mag_brain))
+    fm_mag_brain = strip_ext(opts.fm_mag_brain)
     if not dset_exists(fm_mag_brain):
         raise IOError('Could not find --fm-mag-brain: %s' % fm_mag_brain)
     print('--fm-mag-brain: %s' % fm_mag_brain)
 
-    fm_mag_brain_to_t1_brain_dset = fm_mag_brain + '_to_t1_brain'
+    fm_mag_brain_to_t1_brain_dset = opts.prefix + '_fm_mag_brain_to_t1_brain'
     fm_mag_brain_to_t1_brain_mat = fm_mag_brain_to_t1_brain_dset + '.mat'
-    fm_mag_brain_mask = fm_mag_brain + '_mask'
+    fm_mag_brain_mask = opts.prefix + '_fm_mag_brain_mask'
     fm_mag_brain_mask_inv = fm_mag_brain_mask + '_inv'
     fm_mag_brain_mask_idx = fm_mag_brain_mask + '_idx'
     fm_mag_brain_mask50 = fm_mag_brain_mask + '50'
     fm_mag_brain_mask_ero = fm_mag_brain_mask + '_ero'
     fm_mag_brain_masked = fm_mag_brain_mask + 'ed'
-    fm_rads_brain = fm_rads + '_brain'
+    fm_rads_brain = opts.prefix + '_fm_rads_brain'
     fm_rads_brain_tmp_fmapfilt = fm_rads_brain + '_tmp_fmapfilt'
     fm_rads_brain_mask = fm_rads_brain + '_mask'
     fm_rads_brain_unmasked = fm_rads_brain + '_unmasked'
