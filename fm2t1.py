@@ -12,12 +12,12 @@
 #    this list of conditions and the following disclaimer.
 #
 # 2. Redistributions in binary form must reproduce the above copyright notice,
-#   this list of conditions and the following disclaimer in the documentation
-#   and/or other materials provided with the distribution.
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
 #
 # 3. Neither the name of the copyright holder nor the names of its contributors
-#   may be used to endorse or promote products derived from this software
-#   without specific prior written permission.
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -49,23 +49,14 @@ import argparse
 
 
 def fm2t1(argv):
-    '''
-Register field map to T1-weighted brain
-
-Output datasets and files:
-PREFIX_fm_mag_brain_to_t1_brain      Fieldmap (magnitude) registered to T1
-PREFIX_fm_rads_brain_to_t1_brain     Fieldmap (phase) registered to T1
-PREFIX_fm_mag_brain_to_t1_brain.mat  Transformation matrix (fieldmap to T1)'''
+    '''Preprocess and register field map to T1-weighted brain'''
 
     check_flirt()
 
     parser = argparse.ArgumentParser(
-            prog='fm2t1.py',
             add_help=False,
             allow_abbrev=False,
-            description=fm2t1.__doc__,
-            usage='%(prog)s [options] <switches>',
-            formatter_class=argparse.RawTextHelpFormatter)
+            description=fm2t1.__doc__)
 
     g1 = parser.add_argument_group('required switches')
 
@@ -162,7 +153,8 @@ PREFIX_fm_mag_brain_to_t1_brain.mat  Transformation matrix (fieldmap to T1)'''
     out = [
             fm_mag_brain_to_t1_brain_dset,
             fm_mag_brain_to_t1_brain_mat,
-            fm_rads_brain_to_t1_brain
+            fm_rads_brain_to_t1_brain,
+            fm_rads_brain_unmasked
     ]
 
     for o in out:
@@ -189,7 +181,6 @@ PREFIX_fm_mag_brain_to_t1_brain.mat  Transformation matrix (fieldmap to T1)'''
             fm_rads_brain,
             fm_rads_brain_tmp_fmapfilt,
             fm_rads_brain_mask,
-            fm_rads_brain_unmasked,
             fm_rads_brain_to_t1_brain_pad0,
             fm_rads_brain_to_t1_brain_inner_mask
     ]
