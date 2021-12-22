@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+#
+# epi2t1.py: Register EPI to T1-weighted brain (optionally with field map)
+# jfreg2: Joint fMRI Registration (Version 2)
+#
+# Copyright (c) 2021, Jeffrey M. Engelmann
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+# jfreg2 uses the FMRI Software Library (FSL), which is developed by the
+# Analysis Group at the Wellcome Center for Integrative Neuroimaging at the
+# University of Oxford. FSL is released for non-commercial use under an open-
+# source license. https://fsl.fmrib.ox.ac.uk/fsl/fslwiki/Licence
+#
+
+from jfreg2 import __version__
+from jfreg2 import cmd
+from jfreg2 import dset_exists
+from jfreg2 import strip_ext
+from jfreg2 import delete
+from jfreg2 import check_flirt
+import sys
+import os
+import shutil
+import argparse
+import glob
+
+
+def epi2t1(argv):
+    '''Motion-correct and register EPI dataset to T1-weighted dataset'''
+
+    check_flirt()
+
+    parser = argparse.ArgumentParser(
+            add_help=False,
+            allow_abbrev=False,
+            description=epi2t1.__doc__)
+
+    g1 = parser.add_argument_group('required switches')
+
+    g1.add_argument('--t1-brain',
+            required=True,
+            metavar='T1_BRAIN',
+            help='T1-weighted dataset in subject space (brain-extracted)')
+
+    g1.add_argument('--t1-head',
+            required=True,
+            metavar='T1_HEAD',
+            help='T1-weighted dataset in subject space (not brain-extracted)')
+
+    g1.add_argument('--epi',
+            required=True,
+            metavar='EPI',
+            help='EPI dataset in subject space (not brain-extracted)')
+
+    g1.add_argument('--prefix',
+            required=True,
+            metavar='PREFIX',
+            help='Output prefix')
+
+    g2 = parser.add_argument_group('boundary-based registration (BBR)')
+
+    g2.add_argument('--t1-brain-wmseg',
+            metavar='WMSEG',
+            help='White matter mask from FAST segmentation of T1 brain')
+
+    g3 = parser.add_argument_group('distortion correction (requires BBR)')
+
+    g3.add_argument('--fm-rads-unmasked',
+            metavar='FM_RADS_UNMASKED',
+            help='Unmasked field map in units of radians/s (from fm2t1.py)')
+
+    g3.add_argument('--fm-rads-brain-t1',
+            metavar='FM_RADS_BRAIN_T1',
+            help='Field map (radians/s) aligned to T1 brain (from fm2t1.py)')
+
+    g3.add_argument('--fm-to-t1-mat',
+            metavar='FM_TO_T1_MAT',
+            help='Field map to T1 brain transformation matrix (from fm2t1.py)')
+
+    g3.add_argument('--echo-spacing',
+            type=float,
+            metavar='ES',
+            help='Effective echo spacing (seconds) of the EPI used for fMRI')
+
+    g3.add_argument('--unwarp-dir',
+            choices=['x', 'y', 'z', 'x-', 'y-', 'z-'],
+            metavar='DIR',
+            help='Unwarp direction (%(choices)s)')
+
+    g4 = parser.add_argument_group('options')
+
+    g4.add_argument('--base-volume',
+            type=int,
+            default=0,
+            metavar='VOL',
+            help='Functional base volume (0-indexed); default: %(default)d')
+
+    g4.add_argument('--search',
+            type=int,
+            default=90,
+            choices=[0, 90, 180],
+            metavar='DEG',
+            help='Search angle in degrees (%(choices)s; default: %(default)d)')
+
+    g4.add_argument('--overwrite',
+            action='store_true',
+            help='Replace output files if they already exist')
+
+    g4.add_argument('--keep-all',
+            action='store_true',
+            help='Keep intermediate files')
+
+    g4.add_argument('--version',
+            action='version',
+            version=__version__,
+            help='Show version number and exit')
+
+    g4.add_argument('--help',
+            action='help',
+            help='Show this help message and exit')
+
+    opts = parser.parse_args(argv)
+
+    print('epi2t1 begins....')
+
+    # Look for input datasets and set output dataset names
+    t1_brain = strip_ext(opts.t1_brain)
+    if not dset_exists(t1_brain):
+        raise IOError('Could not find --t1-brain: %s' % t1_brain)
+    print('--t1-brain: %s' % t1_brain)
+
+    t1_head = strip_ext(opts.t1_head)
+    if not dset_exists(t1_head):
+        raise IOError('Could not find --t1-head: %s' % t1_head)
+    print('--t1-head: %s' % t1_head)
+
+    epi = strip_ext(opts.epi)
+    if not dset_exists(epi):
+        raise IOError('Could not find --epi: %s' % epi)
+    print('--epi: %s' % epi)
+
+    epi_base = opts.prefix + '_base'
+    epi_base_to_t1_dset = epi_base + '_to_t1'
+    epi_base_to_t1_warp = epi_base_to_t1_dset + '_warp'
+    epi_base_to_t1_mat = epi_base_to_t1_dset + '.mat'
+    epi_mc = opts.prefix + '_mc'
+    mc_cat = epi_mc + '.cat'
+    mc_par = epi_mc + '.par'
+    mc_mat = epi_mc + '.mat'
+    mc_abs = epi_mc + '_abs.rms'
+    mc_abs_mean = epi_mc + '_abs_mean.rms'
+    mc_rel = epi_mc + '_rel.rms'
+    mc_rel_mean = epi_mc + '_rel_mean.rms'
+
+    out = [
+            epi_base,
+            epi_base_to_t1_dset,
+            epi_base_to_t1_warp,
+            epi_base_to_t1_mat,
+            mc_cat,
+            mc_par,
+            mc_abs,
+            mc_abs_mean,
+            mc_rel,
+            mc_rel_mean
+    ]
+
+    tmp = [epi_mc, mc_mat]
+
+    # BBR?
+    epi_base_to_t1_init_mat = None
+    schedule = None
+    bbr = True if opts.t1_brain_wmseg else False
+    if bbr:
+        wmseg = strip_ext(opts.t1_brain_wmseg)
+        if not dset_exists(wmseg):
+            raise IOError('Could not find --t1-brain-wmseg: %s' % wmseg)
+        print('--t1-brain-wmseg: %s' % wmseg)
+
+        epi_base_to_t1_init_mat = epi_base + '_to_t1_init.mat'
+        tmp += [epi_base_to_t1_init_mat]
+
+        # Get FLIRT schedule for BBR
+        schedule = os.path.abspath(os.path.join(os.environ['FSLDIR'],
+            'etc', 'flirtsch', 'bbr.sch'))
+        if not os.path.isfile(schedule):
+            raise IOError('Could not find FLIRT BBR schedule: %s' % schedule)
+
+    # Distortion correction with field map?
+    epi_base_to_t1_shift = None
+    epi_base_to_t1_inv_mat = None
+    fm_rads_brain_to_base_dset = None
+    fm_rads_brain_to_base_mat = None
+    fm_rads_brain_to_base_mask = None
+    pe_dir = None
+    if (opts.fm_rads_unmasked or
+            opts.fm_rads_brain_t1 or
+            opts.fm_to_t1_mat or
+            opts.echo_spacing or
+            opts.unwarp_dir):
+        fm = True
+    else:
+        fm = False
+
+    if fm:
+        if not opts.fm_rads_unmasked:
+            parser.error('Distortion correction requires --fm-rads-unmasked')
+        if not opts.fm_rads_brain_t1:
+            parser.error('Distortion correction requires --fm-rads-brain-t1')
+        elif not opts.fm_to_t1_mat:
+            parser.error('Distortion correction requires --fm-to-t1-mat')
+        elif not opts.echo_spacing:
+            parser.error('Distortion correction requires --echo-spacing')
+        elif not opts.unwarp_dir:
+            parser.error('Distortion correction requires --unwarp-dir')
+        elif not bbr:
+            parser.error('Distortion correction requires --t1-brain-wmseg')
+
+        fm_rads_unmasked = strip_ext(opts.fm_rads_unmasked)
+        if not dset_exists(fm_rads_unmasked):
+            raise IOError('Could not find --fm-rads-unmasked: %s' %
+                    fm_rads_unmasked)
+
+        fm_rads_brain_t1 = strip_ext(opts.fm_rads_brain_t1)
+        if not dset_exists(fm_rads_brain_t1):
+            raise IOError('Could not find --fm-rads-brain-t1: %s' %
+                    fm_rads_brain_t1)
+        print('--fm-rads-brain-t1: %s' % fm_rads_brain_t1)
+
+        fm_to_t1_mat = opts.fm_to_t1_mat
+        if not os.path.isfile(fm_to_t1_mat):
+            raise IOError('Could not find --fm-to-t1-mat: %s' % fm_to_t1_mat)
+        print('--fm-to-t1-mat: %s' % fm_to_t1_mat)
+
+        epi_base_to_t1_shift = epi_base_to_t1_dset + '_shift'
+        epi_base_to_t1_inv_mat = epi_base_to_t1_dset + '_inv.mat'
+        fm_rads_brain_to_base_dset = opts.prefix + '_fm_rads_brain_to_base'
+        fm_rads_brain_to_base_mat = fm_rads_brain_to_base_dset + '.mat'
+        fm_rads_brain_to_base_mask = fm_rads_brain_to_base_dset + '_mask'
+        out += [epi_base_to_t1_shift]
+        tmp += [
+                epi_base_to_t1_inv_mat,
+                fm_rads_brain_to_base_dset,
+                fm_rads_brain_to_base_mat,
+                fm_rads_brain_to_base_mask
+        ]
+
+        # Map unwarp direction to flirt phase encode direction
+        pe_dir = {'x': 1, 'y': 2, 'z': 3, 'x-': -1, 'y-': -2, 'z-': -3}
+
+    # Look for output datasets and overwrite if requested
+    for o in out:
+        print('Output: %s' % o)
+        if dset_exists(o):
+            if opts.overwrite:
+                cmd('imrm', o, echo=False)
+            else:
+                raise IOError('Output dataset already exists: %s' % o)
+        elif os.path.isfile(o):
+            if opts.overwrite:
+                os.remove(o)
+            else:
+                raise IOError('Output dataset already exists: %s' % o)
+
+    # Delete temporary datasets and files
+    for t in tmp:
+        delete(t)
+
+    try:
+        # Extract base volume and convert to floating-point
+        print('Extracting EPI base volume....')
+
+        cmd('fslroi',
+                epi,
+                epi_base,
+                str(opts.base_volume),
+                str(1))
+
+        cmd('fslmaths',
+                epi_base,
+                epi_base,
+                '-odt',
+                'float')
+
+        # Initial 6 DOF registration with correlation ratio cost function
+        print('Registering EPI base volume to T1-weighted dataset....')
+
+        cmd('flirt',
+                '-in', epi_base,
+                '-ref', t1_brain,
+                '-omat', epi_base_to_t1_init_mat
+                        if epi_base_to_t1_init_mat else epi_base_to_t1_mat,
+                '-cost', 'corratio',
+                '-dof', str(6),
+                '-searchrx', str(-opts.search), str(opts.search),
+                '-searchry', str(-opts.search), str(opts.search),
+                '-searchrz', str(-opts.search), str(opts.search))
+
+        if bbr:
+            flirt = [
+                    'flirt',
+                    '-in', epi_base,
+                    '-ref', t1_head,
+                    '-omat', epi_base_to_t1_mat,
+                    '-cost', 'bbr',
+                    '-dof', str(6),
+                    '-wmseg', wmseg,
+                    '-init', epi_base_to_t1_init_mat,
+                    '-nosearch',
+                    '-schedule', schedule
+            ]
+
+            if fm:
+                flirt += [
+                        '-echospacing', str(opts.echo_spacing),
+                        '-pedir', str(pe_dir[opts.unwarp_dir]),
+                        '-fieldmap', fm_rads_brain_t1
+                ]
+
+            cmd(*flirt)
+
+        # Generate warp fields for use with other registrations
+        # Without distortion correction, a warp field isn't strictly necessary,
+        # but we generate it anyway to allow using applywarp to go to standard
+        # space, which is easier when incorporating motion parameters.
+
+        print('Generating EPI base to T1 warp....')
+
+        convertwarp = [
+                'convertwarp',
+                '-r', t1_head,
+                '--postmat=%s' % epi_base_to_t1_mat,
+                '-o', epi_base_to_t1_warp,
+                '--relout'
+        ]
+
+        if fm:
+            cmd('convert_xfm',
+                    '-omat', epi_base_to_t1_inv_mat,
+                    '-inverse', epi_base_to_t1_mat)
+
+            cmd('convert_xfm',
+                    '-omat', fm_rads_brain_to_base_mat,
+                    '-concat',
+                    epi_base_to_t1_inv_mat,
+                    fm_to_t1_mat)
+
+            cmd('applywarp',
+                    '-i', fm_rads_unmasked,
+                    '-r', epi_base,
+                    '--premat=%s' % fm_rads_brain_to_base_mat,
+                    '-o', fm_rads_brain_to_base_dset)
+
+            cmd('fslmaths',
+                    fm_rads_brain_to_base_dset,
+                    '-abs',
+                    '-bin',
+                    fm_rads_brain_to_base_mask)
+
+            cmd('fugue',
+                    '--loadfmap=%s' % fm_rads_brain_to_base_dset,
+                    '--mask=%s' % fm_rads_brain_to_base_mask,
+                    '--saveshift=%s' % epi_base_to_t1_shift,
+                    '--unmaskshift',
+                    '--dwell=%s' % str(opts.echo_spacing),
+                    '--unwarpdir=%s' % opts.unwarp_dir)
+
+            convertwarp += [
+                    '-s', epi_base_to_t1_shift,
+                    '--shiftdir=%s' % opts.unwarp_dir
+            ]
+
+        cmd(*convertwarp)
+
+        # Apply the warp field: This does the final EPI base to T1 registration
+        print('Warping EPI base volume to T1-weighted dataset....')
+
+        cmd('applywarp',
+                '-i', epi_base,
+                '-r', t1_head,
+                '-o', epi_base_to_t1_dset,
+                '-w', epi_base_to_t1_warp,
+                '--interp=spline',
+                '--rel')
+
+        # Motion correction
+        print('Motion correcting EPI dataset....')
+
+        cmd('mcflirt',
+                '-in', epi,
+                '-out', epi_mc,
+                '-reffile', epi_base,
+                '-mats',
+                '-plots',
+                '-rmsrel',
+                '-rmsabs')
+
+        # Concatenate the transformation matrices into one big file
+        with open(mc_cat, 'wb') as catfile:
+            for i in sorted(glob.glob('%s/*' % mc_mat)):
+                with open(i, 'rb') as matfile:
+                    shutil.copyfileobj(matfile, catfile)
+
+    finally:
+        if not opts.keep_all:
+            for t in tmp:
+                delete(t)
+
+    print('epi2t1 ends....')
+
+
+if __name__ == '__main__':
+    epi2t1(sys.argv[1:])

@@ -9,12 +9,12 @@
 #    this list of conditions and the following disclaimer.
 #
 # 2. Redistributions in binary form must reproduce the above copyright notice,
-#   this list of conditions and the following disclaimer in the documentation
-#   and/or other materials provided with the distribution.
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
 #
 # 3. Neither the name of the copyright holder nor the names of its contributors
-#   may be used to endorse or promote products derived from this software
-#   without specific prior written permission.
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -40,7 +40,6 @@ import re
 import shutil
 import argparse
 import subprocess
-import glob
 
 __version__ = '2.0.0 (pre-release)'
 
@@ -363,203 +362,49 @@ def placeholder(argv):
     # LOOP ON FUNCTIONAL MRI DATASETS
     # ###############################
 
-    for f in opts.func:
-        print('Processing functional dataset: %s....' % f)
-
-        f_base = os.path.join(outdir, strip_ext(os.path.basename(f)) + '_base')
-
-        # Extract base volume and convert to floating-point
-        cmd('fslroi',
-            f,
-            f_base,
-            str(opts.base_volume),
-            str(1))
-
-        cmd('fslmaths',
-            f_base,
-            f_base,
-            '-odt',
-            'float')
-
-        # ##########################################
-        # FUNCTIONAL TO STRUCTURAL (T1) REGISTRATION
-        # ##########################################
-
-        print('Registering functional base volume to T1-weighted dataset....')
-
-        f_base_to_t1_init_mat = f_base + '_to_t1_init.mat'
-        f_base_to_t1_dset = f_base + '_to_t1'
-        f_base_to_t1_warp = f_base_to_t1_dset + '_warp'
-        f_base_to_t1_mat = f_base_to_t1_dset + '.mat'
-        f_base_to_t1_inv_mat = f_base_to_t1_dset + '_inv.mat'
-        f_base_fm_rads_to_base_dset = f_base + '_fm_rads_to_base'
-        f_base_fm_rads_to_base_mat = f_base_fm_rads_to_base_dset + '.mat'
-        f_base_fm_rads_to_base_mask = f_base_fm_rads_to_base_dset + '_mask'
-        f_base_fm_rads_to_base_shift = f_base_fm_rads_to_base_dset + '_shift'
-
-        tmp += [
-            f_base_to_t1_init_mat,
-            f_base_to_t1_inv_mat,
-            f_base_fm_rads_to_base_dset,
-            f_base_fm_rads_to_base_mat,
-            f_base_fm_rads_to_base_mask
-        ]
-
-        # Initial functional base to T1 (brain) alignment using 6 DOF
-        cmd('flirt',
-            '-in', f_base,
-            '-ref', t1_brain,
-            '-omat', f_base_to_t1_init_mat,
-            '-cost', 'corratio',
-            '-dof', str(6),
-            '-searchrx', str(-opts.search), str(opts.search),
-            '-searchry', str(-opts.search), str(opts.search),
-            '-searchrz', str(-opts.search), str(opts.search))
-
-        # Register functional base volume to T1 (head) using BBR and field map
-        cmd('flirt',
-            '-in', f_base,
-            '-ref', t1_head,
-            '-omat', f_base_to_t1_mat,
-            '-cost', 'bbr',
-            '-dof', str(6),
-            '-wmseg', wmseg,
-            '-init', f_base_to_t1_init_mat,
-            '-nosearch',
-            '-schedule', bbr_schedule,
-            '-echospacing', str(opts.echo_spacing),
-            '-pedir', str(pe_dir[opts.unwarp_dir]),
-            '-fieldmap', fm_rads_brain_to_t1_head)
-
-        # Generate warp fields for use with other registrations
-        cmd('convert_xfm',
-            '-omat', f_base_to_t1_inv_mat,
-            '-inverse', f_base_to_t1_mat)
-
-        cmd('convert_xfm',
-            '-omat', f_base_fm_rads_to_base_mat,
-            '-concat',
-            f_base_to_t1_inv_mat,
-            fm_to_t1_head_mat)
-
-        cmd('applywarp',
-            '-i', fm_rads_brain_unmasked,
-            '-r', f_base,
-            '--premat=%s' % f_base_fm_rads_to_base_mat,
-            '-o', f_base_fm_rads_to_base_dset)
-
-        cmd('fslmaths',
-            f_base_fm_rads_to_base_dset,
-            '-abs',
-            '-bin',
-            f_base_fm_rads_to_base_mask)
-
-        cmd('fugue',
-            '--loadfmap=%s' % f_base_fm_rads_to_base_dset,
-            '--mask=%s' % f_base_fm_rads_to_base_mask,
-            '--saveshift=%s' % f_base_fm_rads_to_base_shift,
-            '--unmaskshift',
-            '--dwell=%s' % str(opts.echo_spacing),
-            '--unwarpdir=%s' % opts.unwarp_dir)
-
-        cmd('convertwarp',
-            '-r', t1_head,
-            '-s', f_base_fm_rads_to_base_shift,
-            '--postmat=%s' % f_base_to_t1_mat,
-            '-o', f_base_to_t1_warp,
-            '--shiftdir=%s' % opts.unwarp_dir,
-            '--relout')
-
-        # Apply the warp field: This does the final base to T1 registration
-        cmd('applywarp',
-            '-i', f_base,
-            '-r', t1_head,
-            '-o', f_base_to_t1_dset,
-            '-w', f_base_to_t1_warp,
-            '--interp=spline',
-            '--rel')
-
-        # #################
-        # MOTION CORRECTION
-        # #################
-
-        print('Motion correcting the functional dataset....')
-
-        f_mc = os.path.join(outdir, strip_ext(os.path.basename(f)) + '_mc')
-        f_mc_mat = f_mc + '.mat'
-        f_mc_cat = f_mc + '.cat'
-
-        tmp += [ f_mc, f_mc_mat ]
-
-        cmd('mcflirt',
-            '-in', f,
-            '-out', f_mc,
-            '-reffile', f_base,
-            '-mats',
-            '-plots')
-
-        # Concatenate the transformation matrices into one big file
-        with open(f_mc_cat, 'wb') as catfile:
-            for i in sorted(glob.glob('%s/*' % f_mc_mat)):
-                with open(i, 'rb') as matfile:
-                    shutil.copyfileobj(matfile, catfile)
-
         # #########################################
         # WARP FUNCTIONAL DATASET TO STANDARD SPACE
         # #########################################
 
-        print('Warping functional dataset to standard space....')
+        #print('Warping functional dataset to standard space....')
 
-        f_to_standard_dset = os.path.join(outdir,
-            strip_ext(os.path.basename(f)) + '_to_standard')
-        f_base_to_standard_mat = f_base + '_to_standard.mat'
-        f_base_to_standard_warp = f_base + '_to_standard_warp'
+        #f_to_standard_dset = os.path.join(outdir,
+        #    strip_ext(os.path.basename(f)) + '_to_standard')
+        #f_base_to_standard_mat = f_base + '_to_standard.mat'
+        #f_base_to_standard_warp = f_base + '_to_standard_warp'
 
         # Concatenate base to T1 and T1 to standard transformation matrices
-        cmd('convert_xfm',
-            '-omat', f_base_to_standard_mat,
-            '-concat', t1_to_standard_mat,
-            f_base_to_t1_mat)
+        #cmd('convert_xfm',
+        #    '-omat', f_base_to_standard_mat,
+        #    '-concat', t1_to_standard_mat,
+        #    f_base_to_t1_mat)
 
         # Generate functional to standard warp field
-        if t1_to_standard_warp:
-            cmd('convertwarp',
-                '--ref=%s' % standard_brain_ores,
-                '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
-                '--premat=%s' % f_base_to_t1_mat,
-                '--warp1=%s' % t1_to_standard_warp,
-                '--out=%s' % f_base_to_standard_warp,
-                '--relout',
-                '--shiftdir=%s' % opts.unwarp_dir)
-        else:
-            cmd('convertwarp',
-                '--ref=%s' % standard_brain_ores,
-                '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
-                '--premat=%s' % f_base_to_standard_mat,
-                '--out=%s' % f_base_to_standard_warp,
-                '--relout',
-                '--shiftdir=%s' % opts.unwarp_dir)
+        #if t1_to_standard_warp:
+        #    cmd('convertwarp',
+        #        '--ref=%s' % standard_brain_ores,
+        #        '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
+        #        '--premat=%s' % f_base_to_t1_mat,
+        #        '--warp1=%s' % t1_to_standard_warp,
+        #        '--out=%s' % f_base_to_standard_warp,
+        #        '--relout',
+        #        '--shiftdir=%s' % opts.unwarp_dir)
+        #else:
+        #    cmd('convertwarp',
+        #        '--ref=%s' % standard_brain_ores,
+        #        '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
+        #        '--premat=%s' % f_base_to_standard_mat,
+        #        '--out=%s' % f_base_to_standard_warp,
+        #        '--relout',
+        #        '--shiftdir=%s' % opts.unwarp_dir)
 
         # Apply the warp. Use motion correction matrices as premat.
-        cmd('applywarp',
-            '-i', f,
-            '--premat=%s' % f_mc_cat,
-            '-r', standard_brain_ores,
-            '-o', f_to_standard_dset,
-            '-w', f_base_to_standard_warp,
-            '--rel',
-            '--paddingsize=%s' % str(1),
-            '--interp=%s' % opts.final_interp)
-
-    if not opts.keep_all:
-        for t in tmp:
-            if dset_exists(t):
-                cmd('imrm', t, echo=False)
-            elif os.path.isdir(t):
-                shutil.rmtree(t)
-            elif os.path.isfile(t):
-                os.remove(t)
-            else:
-                raise RuntimeError('Could not remove %s' % t)
-
-    print('jfreg2 ends....')
+        #cmd('applywarp',
+        #    '-i', f,
+        #    '--premat=%s' % f_mc_cat,
+        #    '-r', standard_brain_ores,
+        #    '-o', f_to_standard_dset,
+        #    '-w', f_base_to_standard_warp,
+        #    '--rel',
+        #    '--paddingsize=%s' % str(1),
+        #    '--interp=%s' % opts.final_interp)
