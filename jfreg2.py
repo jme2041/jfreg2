@@ -41,18 +41,19 @@ import shutil
 import argparse
 import subprocess
 
+
 __version__ = '2.0.0 (pre-release)'
 
 
 def cmd(*cmd, echo=True, capture_output=False):
-    """Run a shell command (echoing it to stdout by default)"""
+    '''Run a shell command (echoing it to stdout by default)'''
     if(echo):
         print(' '.join(cmd))
     return subprocess.run(cmd, check=True, capture_output=capture_output)
 
 
 def dset_exists(path):
-    """Test whether a dataset exists"""
+    '''Test whether a dataset exists'''
     # If there is a file extension, check that the file exists
     if(path.endswith('.nii') or path.endswith('.nii.gz')):
         return os.path.isfile(path)
@@ -84,7 +85,7 @@ def dset_exists(path):
 
 
 def strip_ext(path):
-    """Strip NIfTI extensions"""
+    '''Strip NIfTI extensions'''
     path = path.removesuffix('.hdr')
     path = path.removesuffix('.hdr.gz')
     path = path.removesuffix('.nii')
@@ -102,7 +103,7 @@ def delete(x):
 
 
 def check_flirt():
-    """Check FLIRT version"""
+    '''Check FLIRT version'''
     FLIRT_MIN = (6, 0)
     capture = cmd('flirt', '-version', echo=False, capture_output=True)
     flirt_verstr = capture.stdout.decode().splitlines()[0]
@@ -112,299 +113,3 @@ def check_flirt():
     flirt_ver = tuple(map(int, match.groups()))
     if flirt_ver < FLIRT_MIN:
         raise RuntimeError('FLIRT %d.%d or newer is required' % FLIRT_MIN)
-
-def placeholder(argv):
-    # Look for the standard template (MNI152_T1_2mm_brain)
-    standard_brain = os.path.abspath(os.path.join(os.environ['FSLDIR'], 'data',
-            'standard', 'MNI152_T1_2mm_brain'))
-    if not dset_exists(standard_brain):
-        raise IOError('Could not find standard template: %s' % standard_brain)
-
-    # Get FLIRT schedule for BBR
-    bbr_schedule = os.path.abspath(os.path.join(os.environ['FSLDIR'],
-        'etc', 'flirtsch', 'bbr.sch'))
-    if not os.path.isfile(bbr_schedule):
-        raise IOError('Could not find FLIRT BBR schedule: %s' % bbr_schedule)
-
-    # Generate dict that maps unwarp direction to flirt phase encode direction
-    pe_dir = {
-        'x': 1,
-        'y': 2,
-        'z': 3,
-        'x-': -1,
-        'y-': -2,
-        'z-': -3
-    }
-
-    parser = argparse.ArgumentParser(
-        prog='jfreg2',
-        add_help=False,
-        allow_abbrev=False,
-        description='Joint fMRI Registration',
-        usage='%(prog)s [options] <switches> FUNC [FUNC ...]')
-
-    g1 = parser.add_argument_group('required switches')
-
-    g1.add_argument('--outdir',
-        required=True,
-        metavar='OUTDIR',
-        help='Output directory (will be created)')
-
-    g1.add_argument('--t1-brain',
-        required=True,
-        metavar='T1_BRAIN',
-        help='T1-weighted dataset in subject space (brain-extracted)')
-
-    g1.add_argument('--t1-head',
-        required=True,
-        metavar='T1_HEAD',
-        help='T1-weighted dataset in subject space (not brain-extracted)')
-
-    g1.add_argument('--t1-brain-wmseg',
-        required=True,
-        metavar='WMSEG',
-        help='White matter map from FAST segmentation of T1-weighted dataset')
-
-    g1.add_argument('--t1-to-standard-mat',
-        required=True,
-        metavar='MAT',
-        help='''Transformation matrix for T1-weighted dataset to MNI152_T1_2mm
-        (from flirt linear registration)''')
-
-    g1.add_argument('--fieldmap-rads',
-        required=True,
-        metavar='FM_RADS',
-        help='Field map in units of radians/second (phase-reconstructed)')
-
-    g1.add_argument('--fieldmap-mag-brain',
-        required=True,
-        metavar='FM_MAG_BRAIN',
-        help='Magnitude-reconstructed field map (brain-extracted)')
-
-    g1.add_argument('--fieldmap-mag-head',
-        required=True,
-        metavar='FM_MAG_HEAD',
-        help='Magnitude-reconstructed field map (not brain-extracted)')
-
-    g1.add_argument('--echo-time',
-        type=float,
-        required=True,
-        metavar='TE',
-        help='Echo time (in seconds) of EPI used for functional MRI')
-
-    g1.add_argument('--echo-spacing',
-        type=float,
-        required=True,
-        metavar='ES',
-        help='Effective echo spacing (in seconds) of the EPI used for fMRI')
-
-    g1.add_argument('--unwarp-dir',
-        required=True,
-        choices=['x', 'y', 'z', 'x-', 'y-', 'z-'],
-        metavar='UNWARP_DIR',
-        help='Unwarp direction (%(choices)s)')
-
-    g2 = parser.add_argument_group('options')
-
-    g2.add_argument('--t1-to-standard-warp',
-        required=False,
-        metavar='WARP',
-        help='''Warp field for T1-weighted dataset to MNI152_T1_2mm (from fnirt
-        nonlinear registration)''')
-
-    g2.add_argument('--base-volume',
-        type=int,
-        default=0,
-        metavar='VOL',
-        help='Functional base volume number (0-indexed); default: %(default)d')
-
-    g2.add_argument('--output-resolution',
-        type=float,
-        default=2.0,
-        metavar='MM',
-        help='''Output resolution for functional dataset (mm;
-        default: %(default)1.1f)''')
-
-    g2.add_argument('--search',
-        type=int,
-        default=90,
-        choices=[0, 90, 180],
-        metavar='DEG',
-        help='Search angle in degrees (%(choices)s; default: %(default)d)')
-
-    g2.add_argument('--final-interp',
-        default='trilinear',
-        choices=['nn', 'trilinear', 'sinc', 'spline'],
-        metavar='INTERP',
-        help='''Interpolation method for functional to standard warp
-        (%(choices)s; default: %(default)s)''')
-
-    g2.add_argument('--overwrite',
-        action='store_true',
-        help='Replace output directory if it already exists')
-
-    g2.add_argument('--keep-all',
-        action='store_true',
-        help='Keep intermediate files')
-
-    g2.add_argument('--version',
-        action='version',
-        version=version,
-        help='Show version number and exit')
-
-    g2.add_argument('--help',
-        action='help',
-        help='Show this help message and exit')
-
-    parser.add_argument('func',
-        nargs='+',
-        metavar='FUNC',
-        help='Functional MRI dataset(s)')
-
-    opts = parser.parse_args(argv)
-
-    print('jfreg2 begins....')
-
-    # Look for T1-to-standard transformation matrix
-    t1_to_standard_mat = os.path.abspath(opts.t1_to_standard_mat)
-    if not os.path.isfile(t1_to_standard_mat):
-        raise IOError('Could not find --t1-to-standard-mat file: %s' %
-            t1_to_standard_mat)
-    print('--t1-to-standard-mat: %s' % t1_to_standard_mat)
-
-    # Look for T1-to-standard warp field
-    t1_to_standard_warp = opts.t1_to_standard_warp
-    if t1_to_standard_warp:
-        t1_to_standard_warp = os.path.abspath(t1_to_standard_warp)
-        if not dset_exists(t1_to_standard_warp):
-            raise IOError('Could not find --t1-to-standard-warp file: %s' %
-                t1_to_standard_warp)
-    print('--t1-to-standard-warp: %s' % t1_to_standard_warp)
-
-    # Look for input datasets
-    t1_brain = os.path.abspath(opts.t1_brain)
-    if not dset_exists(t1_brain):
-        raise IOError('Could not find --t1-brain dataset: %s' % t1_brain)
-    print('--t1-brain: %s' % t1_brain)
-
-    t1_head = os.path.abspath(opts.t1_head)
-    if not dset_exists(t1_head):
-        raise IOError('Could not find --t1-head dataset: %s' % t1_head)
-    print('--t1-head: %s' % t1_head)
-
-    wmseg = os.path.abspath(opts.t1_brain_wmseg)
-    if not dset_exists(wmseg):
-        raise IOError('Could not find --t1-brain-wmseg dataset: %s' % wmseg)
-    print('--t1-brain-wmseg: %s' % wmseg)
-
-    fm_rads = os.path.abspath(opts.fieldmap_rads)
-    if not dset_exists(fm_rads):
-        raise IOError('Could not find --fieldmap-rads dataset: %s' % fm_rads)
-    print('--fieldmap-rads: %s' % fm_rads)
-
-    fm_mag_brain = os.path.abspath(opts.fieldmap_mag_brain)
-    if not dset_exists(fm_mag_brain):
-        raise IOError('Could not find --fieldmap-mag-brain dataset: %s' %
-            fm_mag_brain)
-    print('--fieldmap-mag-brain: %s' % fm_mag_brain)
-
-    fm_mag_head = os.path.abspath(opts.fieldmap_mag_head)
-    if not dset_exists(fm_mag_head):
-        raise IOError('Could not find --fieldmap-mag-head dataset: %s' %
-            fm_mag_head)
-    print('--fieldmap-mag-head: %s' % fm_mag_head)
-
-    for f in opts.func:
-        if not dset_exists(f):
-            raise IOError('Could not find functional dataset: %s' % f)
-        print('functional dataset: %s' % f)
-
-    # Warn if --fieldmap-mag-brain appears not to be brain-extracted
-    print('Checking fieldmap....')
-    capture = cmd('fslstats', fm_mag_brain, '-V', capture_output=True)
-    nonzero_voxels = float(capture.stdout.decode().split()[0])
-    print('Non-zero voxels: %d' % int(nonzero_voxels))
-    capture = cmd('fslstats', fm_mag_brain, '-v', capture_output=True)
-    total_voxels = float(capture.stdout.decode().split()[0])
-    print('Total voxels: %d' % int(total_voxels))
-    prop_nonzero = nonzero_voxels / total_voxels;
-    print('Proportion non-zero: %f' % prop_nonzero)
-    if(prop_nonzero > 0.9):
-        print('WARNING: High proportion of non-zero voxels in brain-extracted '
-            'field map')
-
-    # Create output directory
-    outdir = os.path.abspath(opts.outdir)
-    if os.path.isdir(outdir):
-        if opts.overwrite:
-            shutil.rmtree(outdir)
-        else:
-            raise IOError('Output directory already exists: %s' % outdir)
-    os.mkdir(outdir)
-
-    # Temporary datasets and files
-    tmp = []
-
-    # Create a dataset in standard space at the desired output resolution
-    standard_brain_ores = os.path.join(outdir,
-        os.path.basename(standard_brain)) + '_ores'
-
-    tmp += [ standard_brain_ores ]
-
-    cmd('flirt',
-        '-in', standard_brain,
-        '-ref', standard_brain,
-        '-out', standard_brain_ores,
-        '-applyisoxfm', str(opts.output_resolution),
-        '-interp', 'trilinear')
-
-    # ###############################
-    # LOOP ON FUNCTIONAL MRI DATASETS
-    # ###############################
-
-        # #########################################
-        # WARP FUNCTIONAL DATASET TO STANDARD SPACE
-        # #########################################
-
-        #print('Warping functional dataset to standard space....')
-
-        #f_to_standard_dset = os.path.join(outdir,
-        #    strip_ext(os.path.basename(f)) + '_to_standard')
-        #f_base_to_standard_mat = f_base + '_to_standard.mat'
-        #f_base_to_standard_warp = f_base + '_to_standard_warp'
-
-        # Concatenate base to T1 and T1 to standard transformation matrices
-        #cmd('convert_xfm',
-        #    '-omat', f_base_to_standard_mat,
-        #    '-concat', t1_to_standard_mat,
-        #    f_base_to_t1_mat)
-
-        # Generate functional to standard warp field
-        #if t1_to_standard_warp:
-        #    cmd('convertwarp',
-        #        '--ref=%s' % standard_brain_ores,
-        #        '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
-        #        '--premat=%s' % f_base_to_t1_mat,
-        #        '--warp1=%s' % t1_to_standard_warp,
-        #        '--out=%s' % f_base_to_standard_warp,
-        #        '--relout',
-        #        '--shiftdir=%s' % opts.unwarp_dir)
-        #else:
-        #    cmd('convertwarp',
-        #        '--ref=%s' % standard_brain_ores,
-        #        '--shiftmap=%s' % f_base_fm_rads_to_base_shift,
-        #        '--premat=%s' % f_base_to_standard_mat,
-        #        '--out=%s' % f_base_to_standard_warp,
-        #        '--relout',
-        #        '--shiftdir=%s' % opts.unwarp_dir)
-
-        # Apply the warp. Use motion correction matrices as premat.
-        #cmd('applywarp',
-        #    '-i', f,
-        #    '--premat=%s' % f_mc_cat,
-        #    '-r', standard_brain_ores,
-        #    '-o', f_to_standard_dset,
-        #    '-w', f_base_to_standard_warp,
-        #    '--rel',
-        #    '--paddingsize=%s' % str(1),
-        #    '--interp=%s' % opts.final_interp)
