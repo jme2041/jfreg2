@@ -52,6 +52,16 @@ def cmd(*cmd, echo=True, capture_output=False):
     return subprocess.run(cmd, check=True, capture_output=capture_output)
 
 
+def check_prefix(prefix):
+    '''Test whether a prefix is valid'''
+    path = os.path.abspath(prefix)
+    if os.path.isdir(path):
+        raise IOError('Prefix cannot end with a directory name: %s' % path)
+    if not os.path.exists(os.path.dirname(path)):
+        raise IOError('Prefix directory does not exist: %s' %
+                os.path.dirname(path))
+
+
 def dset_exists(path):
     '''Test whether a dataset exists'''
     # If there is a file extension, check that the file exists

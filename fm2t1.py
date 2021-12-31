@@ -39,6 +39,7 @@
 
 from jfreg2 import __version__
 from jfreg2 import cmd
+from jfreg2 import check_prefix
 from jfreg2 import dset_exists
 from jfreg2 import strip_ext
 from jfreg2 import delete
@@ -115,6 +116,8 @@ def fm2t1(argv):
     opts = parser.parse_args(argv)
 
     print('jfreg2 begins....')
+
+    check_prefix(opts.prefix)
 
     # Look for input datasets
     t1_brain = strip_ext(opts.t1_brain)
