@@ -49,6 +49,7 @@ import os
 import shutil
 import argparse
 import glob
+import csv
 
 
 def epi2t1(argv):
@@ -179,6 +180,18 @@ def epi2t1(argv):
     mc_abs_mean = epi_mc + '_abs_mean.rms'
     mc_rel = epi_mc + '_rel.rms'
     mc_rel_mean = epi_mc + '_rel_mean.rms'
+    epi_mc_mask = epi_mc + '_mask'
+    epi_mc_res_mse = epi_mc + '_res_mse'
+    epi_mc_res_mse0 = epi_mc_res_mse + '0'
+    epi_mc_res_mse1 = epi_mc_res_mse + '1'
+    epi_mc_res_mse_diff = epi_mc_res_mse + '_diff'
+    epi_mc_outliers = epi_mc + '_outliers'
+    epi_mc_one = epi_mc + '_one'
+    epi_mc_zero = epi_mc + '_zero'
+    epi_mc_stp = epi_mc + '_stp'
+    epi_mc_singleev = epi_mc + '_singleev.txt'
+    epi_mc_censor = epi_mc + '_censor.txt'
+    epi_mc_confounds = epi_mc + '_confounds.txt'
 
     out = [
             epi_base,
@@ -190,10 +203,25 @@ def epi2t1(argv):
             mc_abs,
             mc_abs_mean,
             mc_rel,
-            mc_rel_mean
+            mc_rel_mean,
+            epi_mc_censor,
+            epi_mc_confounds
     ]
 
-    tmp = [epi_mc, mc_mat]
+    tmp = [
+            epi_mc,
+            mc_mat,
+            epi_mc_mask,
+            epi_mc_res_mse,
+            epi_mc_res_mse0,
+            epi_mc_res_mse1,
+            epi_mc_res_mse_diff,
+            epi_mc_outliers,
+            epi_mc_one,
+            epi_mc_zero,
+            epi_mc_stp,
+            epi_mc_singleev
+    ]
 
     # BBR?
     epi_base_to_t1_init_mat = None
@@ -414,10 +442,12 @@ def epi2t1(argv):
         # Motion correction
         print('Motion correcting EPI dataset....')
 
+        # This was switched from reffile to refvol so the floating-point
+        # arithmetic for detecting outliers matches fsl_motion_outliers
         cmd('mcflirt',
                 '-in', epi,
                 '-out', epi_mc,
-                '-reffile', epi_base,
+                '-refvol', str(opts.base_volume),
                 '-mats',
                 '-plots',
                 '-rmsrel',
@@ -428,6 +458,166 @@ def epi2t1(argv):
             for i in sorted(glob.glob('%s/*' % mc_mat)):
                 with open(i, 'rb') as matfile:
                     shutil.copyfileobj(matfile, catfile)
+
+        # The following detects motion outliers and produces a censor list that
+        # can be passed to AFNI's 3dDeconvolve via the CENSORTR option and a
+        # design matrix that can be used to add motion confound regressors to
+        # an AFNI or FSL GLM. The procedure is that used in fsl_motion_outliers
+        # with the rmsrel criterion for determining outliers, with the
+        # exception that the base volume is selected via opts.base_volume
+        # rather than automatically using the middle volume.
+
+        print('Detecting motion outliers....')
+
+        capture = cmd('fslnvols', epi_mc, capture_output=True)
+        tmax = int(capture.stdout.decode())
+        tmax1 = tmax-1
+
+        capture = cmd('fslstats',
+                epi_mc,
+                '-P', str(2),
+                '-P', str(98),
+                capture_output=True)
+        thr2, thr98 = capture.stdout.decode().split()
+        thr2 = float(thr2)
+        thr98 = float(thr98)
+        robthr = thr2 + 0.1 * (thr98 - thr2)
+
+        cmd('fslmaths',
+                epi_mc,
+                '-Tmean',
+                '-thr', str(robthr),
+                '-bin',
+                epi_mc_mask)
+
+        capture = cmd('fslstats',
+                epi_mc,
+                '-k', epi_mc_mask,
+                '-P', str(50),
+                capture_output=True)
+        brainmed = float(capture.stdout.decode())
+
+        capture = cmd('fslstats', epi_mc_mask, '-m', capture_output=True)
+        maskmean = float(capture.stdout.decode())
+
+        # Compute residual mean square error (--rmsrel in fsl_motion_outliers)
+        cmd('fslmaths',
+                epi_mc,
+                '-sub', epi_base,
+                '-mas', epi_mc_mask,
+                '-div', str(brainmed),
+                '-sqr',
+                '-Xmean',
+                '-Ymean',
+                '-Zmean',
+                '-div', str(maskmean),
+                '-sqrt',
+                epi_mc_res_mse,
+                '-odt', 'float')
+
+        # Compute difference
+        cmd('fslroi',
+                epi_mc_res_mse,
+                epi_mc_res_mse0,
+                str(0), str(1),
+                str(0), str(1),
+                str(0), str(1),
+                str(0), str(tmax1))
+
+        cmd('fslroi',
+                epi_mc_res_mse,
+                epi_mc_res_mse1,
+                str(0), str(1),
+                str(0), str(1),
+                str(0), str(1),
+                str(1), str(tmax1))
+
+        cmd('fslmaths',
+                epi_mc_res_mse1,
+                '-sub', epi_mc_res_mse0,
+                '-abs',
+                epi_mc_res_mse_diff)
+
+        # Compute outlier threshold
+        capture = cmd('fslstats',
+                epi_mc_res_mse_diff,
+                '-p', str(25),
+                '-p', str(75),
+                capture_output=True)
+        p25, p75 = capture.stdout.decode().split()
+        p25 = float(p25)
+        p75 = float(p75)
+        threshv = p75 + 1.5 * (p75 - p25)
+
+        # Find outliers
+        cmd('fslmaths',
+                epi_mc_res_mse_diff,
+                '-thr', str(threshv),
+                '-bin',
+                epi_mc_outliers)
+
+        cmd('fslroi',
+                epi_mc_outliers,
+                epi_mc_one,
+                str(0), str(1),
+                str(0), str(1),
+                str(0), str(1),
+                str(0), str(1))
+
+        cmd('fslmaths',
+                epi_mc_one,
+                '-mul', str(0),
+                epi_mc_zero)
+
+        cmd('fslmerge',
+                '-t',
+                epi_mc_outliers,
+                epi_mc_zero,
+                epi_mc_outliers)
+
+        capture = cmd('fslstats',
+                epi_mc_outliers,
+                '-V',
+                capture_output=True)
+        nmax = int(capture.stdout.decode().split()[0])
+
+        # Get volume indices of outliers and create FSL design matrix
+        outliers = []
+        dm = []
+        for i in range(tmax):
+            cmd('fslmaths',
+                    epi_mc_outliers,
+                    '-roi',
+                    str(0), str(1),
+                    str(0), str(1),
+                    str(0), str(1),
+                    str(i), str(1),
+                    epi_mc_stp)
+
+            capture = cmd('fslstats', epi_mc_stp, '-V', capture_output=True)
+            val = int(capture.stdout.decode().split()[0])
+            if val > 0:
+                outliers.append(i)
+                cmd('fslmeants',
+                        '-i', epi_mc_stp,
+                        '-o', epi_mc_singleev)
+                sev = None
+                with open(epi_mc_singleev) as f:
+                    sev = [line.strip() for line in f]
+                dm.append(sev)
+
+        print('Found %d outliers over %f' % (nmax, threshv))
+        print(*outliers, sep=' ')
+
+        # Write design matrix to file
+        dm = zip(*dm)
+        with open(epi_mc_confounds, 'w') as f:
+            writer = csv.writer(f, delimiter=' ')
+            writer.writerows(dm)
+
+        # Write (0-indexed) list of censored TRs to text file
+        with open(epi_mc_censor, 'w') as f:
+            f.write(' '.join(str(i) for i in outliers))
 
     finally:
         if not opts.keep_all:
