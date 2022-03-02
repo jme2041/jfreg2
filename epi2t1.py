@@ -122,6 +122,10 @@ def epi2t1(argv):
             metavar='VOL',
             help='Functional base volume (0-indexed); default: %(default)d')
 
+    g4.add_argument('--base-dset',
+            metavar='BASE',
+            help='EPI base volume dataset (overrides --base-volume)')
+
     g4.add_argument('--search',
             type=int,
             default=90,
@@ -168,7 +172,30 @@ def epi2t1(argv):
         raise IOError('Could not find --epi: %s' % epi)
     print('--epi: %s' % epi)
 
-    epi_base = opts.prefix + '_base'
+    out = []
+    create_base = True
+    base_needs_float = False
+    if opts.base_dset:
+        pre_base = strip_ext(opts.base_dset)
+        if not dset_exists(pre_base):
+            raise IOError('Could not find --base-dset: %s' % pre_base)
+        create_base = False
+        print('--base-dset: %s' % pre_base)
+        capture = cmd('fslval', pre_base, 'datatype', capture_output=True)
+        datatype = int(capture.stdout.decode())
+        if datatype == 16:
+            # If floating point, use the provided --base-dset as epi_base
+            epi_base = pre_base
+        else:
+            # If not floating point, need to create epi_base
+            epi_base = pre_base + '_float'
+            base_needs_float = True
+            out += [epi_base]
+    else:
+        # If --base-dset is not set, need to create epi_base
+        epi_base = opts.prefix + '_base'
+        out += [epi_base]
+
     epi_base_to_t1_dset = epi_base + '_to_t1'
     epi_base_to_t1_warp = epi_base_to_t1_dset + '_warp'
     epi_base_to_t1_mat = epi_base_to_t1_dset + '.mat'
@@ -193,8 +220,7 @@ def epi2t1(argv):
     epi_mc_censor = epi_mc + '_censor.txt'
     epi_mc_confounds = epi_mc + '_confounds.txt'
 
-    out = [
-            epi_base,
+    out += [
             epi_base_to_t1_dset,
             epi_base_to_t1_warp,
             epi_base_to_t1_mat,
@@ -318,25 +344,41 @@ def epi2t1(argv):
             else:
                 raise IOError('Output dataset already exists: %s' % o)
 
+    if opts.keep_all:
+        for t in tmp:
+            print('Temporary: %s' % t)
+
     # Delete temporary datasets and files
     for t in tmp:
         delete(t)
 
     try:
-        # Extract base volume and convert to floating-point
-        print('Extracting EPI base volume....')
+        if create_base:
+            print('Extracting EPI base volume....')
 
-        cmd('fslroi',
-                epi,
-                epi_base,
-                str(opts.base_volume),
-                str(1))
+            cmd('fslroi',
+                    epi,
+                    epi_base,
+                    str(opts.base_volume),
+                    str(1))
 
-        cmd('fslmaths',
-                epi_base,
-                epi_base,
-                '-odt',
-                'float')
+            cmd('fslmaths',
+                    epi_base,
+                    epi_base,
+                    '-odt',
+                    'float')
+
+        else:
+            print('Checking EPI base volume....')
+
+            capture = cmd('fslnvols', pre_base, capture_output=True)
+            bvols = int(capture.stdout.decode())
+
+            if bvols != 1:
+                raise RuntimeError('EPI base dataset must have one volume')
+
+            if base_needs_float:
+                cmd('fslmaths', pre_base, epi_base, '-odt', 'float')
 
         # Initial 6 DOF registration with correlation ratio cost function
         print('Registering EPI base volume to T1-weighted dataset....')
@@ -442,16 +484,22 @@ def epi2t1(argv):
         # Motion correction
         print('Motion correcting EPI dataset....')
 
-        # This was switched from reffile to refvol so the floating-point
-        # arithmetic for detecting outliers matches fsl_motion_outliers
-        cmd('mcflirt',
+        mcflirt = [
+                'mcflirt',
                 '-in', epi,
                 '-out', epi_mc,
-                '-refvol', str(opts.base_volume),
                 '-mats',
                 '-plots',
                 '-rmsrel',
-                '-rmsabs')
+                '-rmsabs'
+        ]
+
+        if create_base:
+            mcflirt += ['-refvol', str(opts.base_volume)]
+        else:
+            mcflirt += ['-reffile', epi_base]
+
+        cmd(*mcflirt)
 
         # Concatenate the transformation matrices into one big file
         with open(mc_cat, 'wb') as catfile:
